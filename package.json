@@ -1,0 +1,17 @@
+{
+  "name": "vscode-agents-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Touch-friendly userscript for VS Code Agents in Firefox Desktop site mode.",
+  "scripts": {
+    "check": "node --check vscode-agents-mobile.user.js",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "monaco-editor": "^0.57.0"
+  },
+  "overrides": {
+    "dompurify": "^3.4.17"
+  }
+}

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no">
+  <style>
+    body { margin: 0; font: 14px system-ui; }
+    .part.titlebar { height: 44px; }
+    .part.sessionspart { padding: 8px; }
+    .interactive-input-editor { position: relative; height: 120px; }
+    .monaco-editor { height: 120px; width: 360px; }
+    .part.sidebar, .part.editor { display: none; }
+    .model-picker-config { display: none; }
+    .interactive-request { margin: 16px 0; }
+    .chat-markdown-part { padding: 12px; background: #ddd; }
+    .session-chat-twistie { display: inline-block; width: 20px; height: 30px; }
+    .session-item { display: inline-block; }
+    [role="dialog"] { position: fixed; z-index: 2500; top: 50px; left: 8px; background: white; padding: 12px; border: 1px solid; }
+  </style>
+  <script src="/vs/loader.js"></script>
+</head>
+<body>
+  <div class="monaco-workbench agent-sessions-workbench nosidebar noauxiliarybar noeditorpane">
+    <div class="part titlebar" id="workbench.parts.titlebar">
+      <button aria-label="Toggle Side Bar (Ctrl+B)">Sessions</button>
+      <button aria-label="Toggle Side Panel (Ctrl+Alt+B)">Files</button>
+      <button aria-label="Signed in with GitHub">Account</button>
+    </div>
+    <div class="part sidebar" id="workbench.parts.sidebar">
+      <div class="sessions-list-control">
+        <div role="tree" aria-label="Sessions">
+          <div role="treeitem" aria-label="Parent session" aria-expanded="true">
+            <div class="monaco-tl-twistie collapsible session-chat-twistie">v</div>
+            <div class="session-item">Parent session</div>
+          </div>
+          <div role="treeitem" aria-label="Child session">Child session</div>
+        </div>
+      </div>
+    </div>
+    <div class="part sessionspart" id="workbench.parts.sessions">
+      <div class="interactive-session">
+        <div role="list" aria-label="Chat">
+          <div class="interactive-item-container interactive-request" tabindex="0">
+            <div class="value">
+              <div class="chat-markdown-part rendered-markdown clickable" tabindex="0">
+                <p>Previously sent prompt <a href="#reference">reference</a></p>
+              </div>
+            </div>
+          </div>
+          <div class="interactive-item-container interactive-response">
+            <div class="value"><div class="rendered-markdown"><p>Response text to select.</p></div></div>
+          </div>
+        </div>
+        <div class="interactive-input-part">
+          <div class="chat-input-container">
+            <div class="chat-editor-container">
+              <div class="interactive-input-editor"></div>
+            </div>
+            <div class="chat-input-toolbar">
+              <div class="model-picker-split" role="group" aria-label="Models, Example Model">
+                <button class="model-picker-name" aria-label="Models, Example Model">Example Model</button>
+                <button class="model-picker-config model-picker-config-summary"
+                  aria-label="Example Model details, Thinking Level: High, Context Size: 200K">High - 200K</button>
+              </div>
+              <button class="native-send" aria-label="Send">Send</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="part editor" id="workbench.parts.editor"><div>Files</div></div>
+  </div>
+  <script>
+    require.config({ paths: { vs: '/vs' } });
+    require(['vs/editor'], monaco => {
+      const editorHost = document.querySelector('.interactive-input-editor');
+      const editor = monaco.editor.create(editorHost, {
+        value: '',
+        language: 'plaintext',
+        ariaLabel: 'Chat Input',
+        minimap: { enabled: false },
+        wordWrap: 'on',
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+        editContext: false,
+      });
+      const fixture = window.fixture = {
+        editor,
+        sends: [],
+        openedSessions: 0,
+        edits: 0,
+        editKeys: [],
+        menus: 0,
+        nativePointerDowns: 0,
+        modelOpens: 0,
+        detailsOpens: 0,
+        setText: value => editor.setValue(value),
+        text: () => editor.getModel().getValue(monaco.editor.EndOfLinePreference.LF),
+      };
+      // The installed app does not export Monaco's API; exercise the DOM bridge.
+      window.monaco = undefined;
+
+      const send = () => {
+        fixture.sends.push(editor.getValue());
+        editor.setValue('');
+      };
+      document.querySelector('.native-send').addEventListener('click', send);
+      document.querySelector('.native-send').addEventListener('-monaco-gesturetap', send);
+      document.addEventListener('keydown', event => {
+        if (event.key === 'Enter' && editorHost.contains(event.target) && !event.shiftKey) {
+          event.preventDefault();
+          send();
+        }
+      }, true);
+
+      const details = document.querySelector('.model-picker-config');
+      const showDetails = () => {
+        fixture.detailsOpens++;
+        const dialog = document.createElement('div');
+        dialog.className = 'context-view';
+        dialog.role = 'dialog';
+        dialog.setAttribute('aria-label', 'Example Model Details');
+        dialog.innerHTML = '<h3>Thinking Level</h3><button data-effort="Low">Low</button>' +
+          '<button data-effort="High">High</button><h3>Context Size</h3>' +
+          '<button data-context="200K">200K</button><button data-context="1M">1M</button>' +
+          '<button data-close>Done</button>';
+        dialog.addEventListener('click', event => {
+          if (event.target.dataset.effort) {
+            details.setAttribute('aria-label', details.getAttribute('aria-label')
+              .replace(/Thinking Level: [^,]+/, 'Thinking Level: ' + event.target.dataset.effort));
+          }
+          if (event.target.dataset.context) {
+            details.setAttribute('aria-label', details.getAttribute('aria-label')
+              .replace(/Context Size: [^,]+/, 'Context Size: ' + event.target.dataset.context));
+          }
+          if (event.target.hasAttribute('data-close')) dialog.remove();
+        });
+        document.body.append(dialog);
+      };
+      details.addEventListener('mousedown', showDetails);
+      document.querySelector('.model-picker-name').addEventListener('mousedown', () => fixture.modelOpens++);
+
+      const tree = document.querySelector('[role="tree"]');
+      tree.addEventListener('click', event => {
+        const row = event.target.closest('[role="treeitem"]');
+        if (event.target.closest('.session-chat-twistie')) {
+          row.setAttribute('aria-expanded', String(row.getAttribute('aria-expanded') !== 'true'));
+        } else {
+          fixture.openedSessions++;
+        }
+      });
+      tree.addEventListener('-monaco-gesturetap', () => fixture.openedSessions++);
+      tree.addEventListener('touchstart', () => fixture.nativePointerDowns++);
+
+      const request = document.querySelector('.interactive-request');
+      let requestTouchConsumed = false;
+      request.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'touch') requestTouchConsumed = true;
+      });
+      request.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          fixture.editKeys.push(event.key);
+          event.preventDefault();
+          fixture.edits++;
+          request.classList.add('editing');
+        }
+      });
+      request.querySelector('.clickable').addEventListener('click', event => {
+        if (requestTouchConsumed) return;
+        if (!event.target.closest('a') && !window.getSelection().toString()) {
+          fixture.edits++;
+          request.classList.add('editing');
+        }
+      });
+      document.querySelector('.interactive-session').addEventListener('contextmenu', event => {
+        fixture.menus++;
+        event.preventDefault();
+      });
+      document.querySelector('.interactive-session').addEventListener('pointerdown', () => fixture.nativePointerDowns++);
+      for (const [label, part, flag] of [
+        ['Toggle Side Bar (Ctrl+B)', 'sidebar', 'nosidebar'],
+        ['Toggle Side Panel (Ctrl+Alt+B)', 'editor', 'noeditorpane'],
+      ]) {
+        document.querySelector(`[aria-label="${label}"]`).addEventListener('click', () => {
+          const workbench = document.querySelector('.monaco-workbench');
+          const opening = workbench.classList.contains(flag);
+          workbench.classList.toggle(flag, !opening);
+          document.querySelector('.part.' + part).style.display = opening ? 'block' : 'none';
+        });
+      }
+      fixture.ready = true;
+    }, error => { window.fixtureError = String(error); });
+  </script>
+</body>
+</html>
