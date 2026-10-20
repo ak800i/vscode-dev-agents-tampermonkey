@@ -17,7 +17,16 @@ module.exports = defineConfig({
     headless: true,
   },
   projects: [
-    { name: 'firefox', timeout: 60_000, use: { browserName: 'firefox' } },
+    {
+      name: 'firefox',
+      timeout: 60_000,
+      use: {
+        browserName: 'firefox',
+        userAgent: 'Mozilla/5.0 (Android 15; Mobile; rv:157.0) Gecko/157.0 Firefox/157.0',
+        screen: { width: 390, height: 844 },
+        hasTouch: true,
+      },
+    },
     { name: 'chromium', use: { browserName: 'chromium', hasTouch: true } },
   ],
 });

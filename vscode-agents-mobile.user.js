@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.1.0
-// @description  Phone-sized desktop layout, native model settings, selectable input, and touch fixes.
+// @version      0.3.0
+// @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
-// @grant        none
+// @sandbox      raw
+// @grant        unsafeWindow
 // @noframes
 // ==/UserScript==
 
@@ -17,8 +18,33 @@
 
   const instanceKey = '__vscodeAgentsMobile';
   window[instanceKey]?.dispose();
+  const pageWindow = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
+  const pageNavigator = pageWindow.navigator;
+  const originalUserAgent = pageNavigator.userAgent;
+  const originalUserAgentDescriptor = Object.getOwnPropertyDescriptor(pageNavigator, 'userAgent');
+  let presentationUserAgent;
+  let startupError;
+  if (/Android/i.test(originalUserAgent)) {
+    let desktopAgent = originalUserAgent.replace(/\bMobile(?:;\s*)?/gi, '');
+    if (!/\bLinux\b/.test(desktopAgent)) desktopAgent = desktopAgent.replace(/\bAndroid\b/, 'Linux; Android');
+    if (desktopAgent !== originalUserAgent) {
+      // VS Code chooses its renderer once from the Mobile marker. Leave the
+      // browser viewport, Android behavior, Firefox version, and HTTP headers intact.
+      try {
+        const getter = typeof exportFunction === 'function'
+          ? exportFunction(() => desktopAgent, pageWindow)
+          : () => desktopAgent;
+        Object.defineProperty(pageNavigator, 'userAgent', { configurable: true, get: getter });
+        presentationUserAgent = getter;
+      } catch (error) {
+        startupError = 'The script could not select desktop-style app controls. Allow its Tampermonkey page-access grant, keep Desktop site OFF, and reload.';
+        console.error('[VS Code Agents Mobile] Presentation override unavailable:', error);
+      }
+    }
+  }
   const controller = new AbortController();
   const editors = new Map();
+  const widthOverrides = new Set();
   const nativeEvents = new WeakSet();
   const buttonActions = new WeakMap();
   const editorSelector = '.interactive-input-editor .monaco-editor, .sessions-chat-editor .monaco-editor';
@@ -29,6 +55,10 @@
   let notice;
   let gesture;
   let lastGesture;
+  let compatibilityClickTimer;
+  let nativePan;
+  let nativeMomentum = false;
+  const blockedTouches = new Set();
   let initializedLayout = false;
   let disposed = false;
   let observedWorkbench;
@@ -47,15 +77,16 @@
       background: var(--vscode-sideBar-background, #191a1b); color: var(--vscode-foreground, #ddd);
       border-bottom: 1px solid var(--vscode-panel-border, #444);
     }
-    .tm-agents-nav button, .tm-agents-settings button, .tm-agents-more button {
+    .tm-agents-nav button, .tm-agents-more button {
       min-height: 44px; padding: 6px 10px; border: 1px solid var(--vscode-panel-border, #555);
       border-radius: 6px; background: var(--vscode-button-secondaryBackground, #333);
-      color: var(--vscode-button-secondaryForeground, #eee); font: 14px system-ui;
+      color: var(--vscode-button-secondaryForeground, #eee); font: 16px system-ui;
       cursor: pointer; touch-action: manipulation;
     }
     .tm-agents-nav button { flex: 1; border-radius: 0; border: 0; }
+    .tm-agents-nav[hidden] { display: none; }
     .tm-agents-nav button[aria-pressed="true"] { box-shadow: inset 0 -3px var(--vscode-focusBorder, #168bce); }
-    .tm-agents-nav button:focus-visible, .tm-agents-settings button:focus-visible {
+    .tm-agents-nav button:focus-visible, .tm-agents-more button:focus-visible {
       outline: 2px solid var(--vscode-focusBorder, #168bce); outline-offset: -2px;
     }
     .tm-agents-more {
@@ -80,8 +111,21 @@
     html.tm-agents-mobile[data-tm-agents-view="panel"] .part.panel {
       visibility: visible !important; pointer-events: auto !important; z-index: 100;
     }
+    html.tm-agents-mobile:not([data-tm-agents-view="chat"]) .part.sessionspart,
+    html.tm-agents-mobile:not([data-tm-agents-view="sessions"]) .part.sidebar,
+    html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor,
+    html.tm-agents-mobile:not([data-tm-agents-view="panel"]) .part.panel { display: none !important; }
+    html.tm-agents-mobile [data-tm-agents-fill-width] {
+      width: 100% !important; min-width: 0 !important; max-width: none !important; box-sizing: border-box;
+    }
     html.tm-agents-mobile .sessions-list-control,
-    html.tm-agents-mobile .sessions-list-control > .monaco-list { width: 100% !important; }
+    html.tm-agents-mobile .sessions-list-control > .monaco-list,
+    html.tm-agents-mobile .sessions-list-control .monaco-scrollable-element,
+    html.tm-agents-mobile .sessions-list-control .monaco-list-rows,
+    html.tm-agents-mobile .part.editor [role="tree"] .monaco-scrollable-element { width: 100% !important; }
+    html.tm-agents-mobile .sessions-list-control .session-title { font-size: 16px !important; }
+    html.tm-agents-mobile .sessions-list-control .session-section-label { font-size: 15px !important; }
+    html.tm-agents-mobile .sessions-list-control .session-details-row { font-size: 13px !important; }
     html.tm-agents-mobile .sessions-list-control .session-chat-twistie {
       min-width: 36px; touch-action: pan-y;
     }
@@ -100,6 +144,10 @@
     }
     .tm-agents-input:focus { outline: 1px solid var(--vscode-focusBorder, #168bce); outline-offset: -1px; }
     .tm-agents-input[hidden] { display: none; }
+    html.tm-agents-mobile .interactive-list .monaco-list-row,
+    html.tm-agents-mobile .sessions-list-control .monaco-list-row {
+      touch-action: var(--tm-agents-transcript-touch-action, pinch-zoom) !important;
+    }
     html.tm-agents-mobile [data-tm-agents-docked] {
       position: fixed !important; top: auto !important;
       bottom: max(0px, calc(100dvh - var(--tm-agents-height, 100dvh))) !important;
@@ -108,21 +156,26 @@
       margin: 0 !important; box-sizing: border-box !important; z-index: 900;
       background: var(--vscode-editor-background, #191a1b);
     }
-    .tm-agents-settings { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 0; }
-    .tm-agents-settings button { flex: 1 1 auto; }
-    .tm-agents-settings button:disabled { opacity: .65; cursor: default; }
+    html.tm-agents-mobile .model-picker-config-summary { display: inline-flex !important; }
     .tm-agents-status { color: var(--vscode-errorForeground, #ff8a8a); white-space: normal; padding: 4px; font: 13px/1.4 system-ui; }
     .tm-agents-status:empty { display: none; }
-    #tm-agents-setup { position: fixed; z-index: 4000; inset: auto 8px 8px; padding: 12px; background: #322400; color: #fff; }
+    #tm-agents-setup {
+      position: fixed; z-index: 4000; inset: auto 8px 8px; padding: 12px;
+      max-height: 70vh; overflow: auto; box-sizing: border-box;
+      background: #322400; color: #fff; font: 16px/1.45 system-ui;
+    }
     html.tm-agents-mobile .interactive-request .rendered-markdown,
     html.tm-agents-mobile .interactive-response .rendered-markdown {
       -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default;
+      font-size: 16px !important; line-height: 1.5;
     }
     html.tm-agents-mobile .chat-model-picker-model .action-list-item-toolbar { visibility: visible !important; }
     html.tm-agents-mobile .context-view { max-width: calc(100vw - 8px); z-index: 3000 !important; }
     html.tm-agents-mobile .tabbed-action-list-details { max-width: calc(100vw - 24px); }
     html.tm-agents-mobile .tabbed-action-list-details button,
-    html.tm-agents-mobile .tabbed-action-list-details [role="radio"] { min-height: 36px; }
+    html.tm-agents-mobile .tabbed-action-list-details [role="radio"] {
+      min-height: 44px; font-size: 16px; white-space: normal;
+    }
   `;
 
   function on(target, type, listener, options = {}) {
@@ -216,11 +269,17 @@
       if (!value) {
         key(input, 'Backspace', 'Backspace', 8);
       } else if (input.editContext && typeof TextUpdateEvent === 'function') {
-        // Paste providers can finish asynchronously and overwrite a newer draft.
-        input.editContext.dispatchEvent(new TextUpdateEvent('textupdate', {
-          updateRangeStart: 0, updateRangeEnd: input.editContext.text.length, text: value,
-          selectionStart: value.length, selectionEnd: value.length,
-        }));
+        // Composition boundaries flush Monaco's deferred native buffer before replacement.
+        const context = input.editContext;
+        context.dispatchEvent(new Event('compositionstart'));
+        try {
+          context.dispatchEvent(new TextUpdateEvent('textupdate', {
+            updateRangeStart: 0, updateRangeEnd: context.text.length, text: value,
+            selectionStart: value.length, selectionEnd: value.length,
+          }));
+        } finally {
+          context.dispatchEvent(new Event('compositionend'));
+        }
       } else if (input instanceof HTMLTextAreaElement) {
         input.value = value;
         input.setSelectionRange(value.length, value.length);
@@ -235,20 +294,26 @@
 
   function sync(state) {
     if (state.composing || state.nativeMode) return false;
+    if (!isLaidOut(state.editor)) {
+      state.pendingSync = true;
+      return false;
+    }
     try {
       if (state.input.value !== state.lastNative || state.error) writeNative(state, state.input.value);
       state.lastNative = state.input.value;
       state.error = '';
+      state.pendingSync = false;
       text(state.status, '');
       return true;
     } catch (error) {
+      state.pendingSync = false;
       report(state, error);
       return false;
     }
   }
 
   function refreshNative(state) {
-    if (!state.editor.isConnected || state.syncing || state.composing || state.error || state.nativeMode) return;
+    if (!isLaidOut(state.editor) || state.syncing || state.composing || state.error || state.nativeMode) return;
     try {
       const value = readNative(state);
       if (value !== state.lastNative) {
@@ -268,43 +333,45 @@
       || state.host.parentElement;
   }
 
-  function modelButtons(state) {
-    const root = composer(state);
-    return {
-      model: root?.querySelector('.model-picker-name[role="button"], .model-picker-name'),
-      details: root?.querySelector('.model-picker-config-summary, .model-picker-config[role="button"]'),
-    };
+  function toggleNativeEditor(state) {
+    if (state.nativeMode) {
+      try {
+        const value = readNative(state);
+        state.input.value = value;
+        state.lastNative = value;
+        state.error = '';
+        text(state.status, '');
+      } catch (error) {
+        report(state, error);
+        text(state.status, `Touch editor unavailable: ${state.error} The native editor remains enabled.`);
+        return;
+      }
+    } else if (!sync(state)) return;
+    state.nativeMode = !state.nativeMode;
+    state.input.hidden = state.nativeMode;
+    state.editor.toggleAttribute('data-tm-agents-native', !state.nativeMode);
+    state.host.classList.toggle('tm-agents-editor-host', !state.nativeMode);
+    if (state.nativeMode) {
+      const native = nativeInput(state);
+      native.focus({ preventScroll: true });
+      key(native, 'ArrowRight', 'ArrowRight', 39);
+    } else state.input.focus({ preventScroll: true });
+    window.dispatchEvent(new Event('resize'));
   }
 
-  function openModelSettings(state, details) {
-    const controls = modelButtons(state);
-    const target = details ? controls.details : controls.model;
-    if (!target || target.getAttribute('aria-disabled') === 'true' || target.disabled) {
-      text(state.status, 'Model settings are unavailable here. Enable Desktop site in Firefox and reload.');
-      return;
+  function activateEditor(state) {
+    if (activeEditor !== state) {
+      activeEditor = state;
+      scheduleRefresh();
     }
-    const event = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, buttons: 1, view: window });
-    nativeEvents.add(event);
-    target.dispatchEvent(event);
   }
 
-  function updateModelSettings(state) {
-    const { model, details } = modelButtons(state);
-    const label = details?.getAttribute('aria-label') || '';
-    const automatic = /^Auto\b/i.test(label);
-    const effort = label.match(/(?:Thinking (?:Level|Effort)|Reasoning (?:Level|Effort)|Effort):\s*([^,]+)/i)?.[1];
-    const context = label.match(/(?:Context Size|Context Window|Max context):\s*([^,]+)/i)?.[1];
-    const name = model?.getAttribute('aria-label')?.replace(/^Models,\s*/i, '') || 'Choose model';
-    text(state.model, name);
-    text(state.effort, `Effort: ${effort || (automatic ? 'Automatic' : 'Not exposed')}`);
-    text(state.context, `Context: ${context || (automatic ? 'Automatic' : 'Not exposed')}`);
-    state.model.disabled = !model;
-    state.effort.disabled = !details;
-    state.context.disabled = !details;
+  function renderedInput(editor) {
+    return [...editor.querySelectorAll('.view-lines .view-line')].map(line => line.textContent).join('\n');
   }
 
   function attachEditor(editor) {
-    if (editors.has(editor) || !editor.querySelector('.native-edit-context, textarea.inputarea')) return;
+    if (editors.has(editor) || !isLaidOut(editor) || !editor.querySelector('.native-edit-context, textarea.inputarea')) return;
     const host = editor.parentElement;
     const input = document.createElement('textarea');
     input.className = 'tm-agents-input';
@@ -317,42 +384,9 @@
     const status = document.createElement('div');
     status.className = 'tm-agents-status';
     status.setAttribute('role', 'status');
-    const settings = document.createElement('div');
-    settings.className = 'tm-agents-settings';
-    const state = { editor, host, input, status, settings, lastNative: '', error: '', composing: false, syncing: false, nativeMode: false };
-    state.model = button('Choose model', () => openModelSettings(state, false));
-    state.effort = button('Effort: Not exposed', () => openModelSettings(state, true));
-    state.context = button('Context: Not exposed', () => openModelSettings(state, true));
-    state.toggle = button('Native editor', () => {
-      if (state.nativeMode) {
-        try {
-          const value = readNative(state);
-          state.input.value = value;
-          state.lastNative = value;
-          state.error = '';
-          text(state.status, '');
-        } catch (error) {
-          report(state, error);
-          text(state.status, `Touch editor unavailable: ${state.error} The native editor remains enabled.`);
-          return;
-        }
-      } else if (!sync(state)) return;
-      state.nativeMode = !state.nativeMode;
-      input.hidden = state.nativeMode;
-      editor.toggleAttribute('data-tm-agents-native', !state.nativeMode);
-      host.classList.toggle('tm-agents-editor-host', !state.nativeMode);
-      text(state.toggle, state.nativeMode ? 'Touch editor' : 'Native editor');
-      if (state.nativeMode) {
-        const native = nativeInput(state);
-        native.focus({ preventScroll: true });
-        key(native, 'ArrowRight', 'ArrowRight', 39);
-      }
-      else input.focus({ preventScroll: true });
-      window.dispatchEvent(new Event('resize'));
-    });
-    settings.append(state.model, state.effort, state.context, state.toggle);
+    const state = { editor, host, input, status, lastNative: '', error: '', composing: false, syncing: false, nativeMode: false, visible: true };
     host.append(input);
-    host.after(settings, status);
+    host.after(status);
     editors.set(editor, state);
     try {
       state.lastNative = readNative(state);
@@ -364,25 +398,28 @@
       report(state, error);
       state.nativeMode = true;
       input.hidden = true;
-      text(state.toggle, 'Touch editor');
       text(state.status, `Touch editor unavailable: ${state.error} The native editor remains enabled.`);
     }
     on(input, 'input', event => { if (!event.isComposing) sync(state); });
-    on(input, 'focus', () => { activeEditor = state; scheduleRefresh(); });
+    on(input, 'focus', () => activateEditor(state));
     on(input, 'compositionstart', () => { state.composing = true; });
     on(input, 'compositionend', () => { state.composing = false; sync(state); });
     on(editor, 'focusin', () => {
-      if (!state.syncing) { activeEditor = state; scheduleRefresh(); }
+      if (!state.syncing) activateEditor(state);
       if (!state.syncing && !state.nativeMode) input.focus({ preventScroll: true });
     });
+    state.renderedInput = renderedInput(editor);
     state.observer = new MutationObserver(records => {
       if (records.some(record => (record.target instanceof Element ? record.target : record.target.parentElement)?.closest('.view-lines'))) {
-        cancelAnimationFrame(state.nativeFrame);
-        state.nativeFrame = requestAnimationFrame(() => refreshNative(state));
+        const current = renderedInput(editor);
+        if (current !== state.renderedInput) {
+          state.renderedInput = current;
+          cancelAnimationFrame(state.nativeFrame);
+          state.nativeFrame = requestAnimationFrame(() => refreshNative(state));
+        }
       }
     });
     state.observer.observe(editor, { childList: true, subtree: true, characterData: true });
-    updateModelSettings(state);
   }
 
   function titleButton(pattern) {
@@ -417,6 +454,16 @@
     const menu = document.createElement('div');
     menu.className = 'tm-agents-more';
     menu.setAttribute('role', 'menu');
+    const currentEditor = activeEditor && isLaidOut(activeEditor.editor)
+      ? activeEditor : [...editors.values()].find(state => isLaidOut(state.editor));
+    if (currentEditor) {
+      const toggle = button(currentEditor.nativeMode ? 'Touch editor' : 'Native editor', () => {
+        menu.remove();
+        toggleNativeEditor(currentEditor);
+      });
+      toggle.setAttribute('role', 'menuitem');
+      menu.append(toggle);
+    }
     for (const target of document.querySelectorAll('.part.titlebar [role="button"], .part.titlebar button')) {
       const label = target.getAttribute('aria-label');
       if (!label || /^Toggle Side (?:Bar|Panel)\b/.test(label)) continue;
@@ -449,9 +496,48 @@
     document.body.append(nav);
   }
 
+  function isLaidOut(element) {
+    return element.isConnected && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== 'hidden';
+  }
+
+  function stretchPaneContents() {
+    for (const element of widthOverrides) {
+      if (!element.isConnected) {
+        element.removeAttribute('data-tm-agents-fill-width');
+        widthOverrides.delete(element);
+      }
+    }
+    for (const pane of document.querySelectorAll('.part.sidebar, .part.editor')) {
+      for (const target of pane.querySelectorAll('.sessions-list-control, [role="tree"], .part.auxiliarybar')) {
+        let element = target;
+        while (element && element !== pane) {
+          if (!widthOverrides.has(element)) {
+            element.setAttribute('data-tm-agents-fill-width', '');
+            widthOverrides.add(element);
+          }
+          element = element.parentElement;
+        }
+      }
+    }
+  }
+
+  function showSetupNotice(message) {
+    if (!notice) {
+      notice = document.createElement('div');
+      notice.id = 'tm-agents-setup';
+      notice.setAttribute('role', 'status');
+      document.body.append(notice);
+    }
+    text(notice, message);
+    const scale = window.visualViewport?.scale || 1;
+    notice.style.fontSize = `${Math.max(16, 16 / scale)}px`;
+    notice.style.padding = `${Math.max(12, 12 / scale)}px`;
+    if (nav) nav.hidden = true;
+  }
+
   function eventElement(event) {
-    const target = event.initialTarget || event.target;
-    return target instanceof Element ? target : target?.parentElement;
+    const target = event.initialTarget || event.wrappedJSObject?.initialTarget || event.target;
+    return target?.nodeType === 1 && typeof target.closest === 'function' ? target : target?.parentElement;
   }
 
   function touchTarget(element) {
@@ -478,6 +564,51 @@
     const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1 });
     nativeEvents.add(event);
     element.dispatchEvent(event);
+  }
+
+  function emitNativeTouch(type, pan) {
+    const pointer = pan?.lastEvent;
+    const touch = pan ? new Touch({
+      identifier: pan.id, target: pan.scroller,
+      clientX: pointer.clientX, clientY: pointer.clientY,
+      pageX: pointer.pageX, pageY: pointer.pageY,
+      screenX: pointer.screenX, screenY: pointer.screenY,
+    }) : undefined;
+    const active = touch && type !== 'touchend' ? [touch] : [];
+    const event = new TouchEvent(type, {
+      bubbles: true, cancelable: true,
+      touches: active, targetTouches: active, changedTouches: touch ? [touch] : [],
+    });
+    nativeEvents.add(event);
+    document.dispatchEvent(event);
+  }
+
+  function finishNativePan(cancelled = false) {
+    if (!nativePan) return;
+    const pan = nativePan;
+    emitNativeTouch('touchend', pan);
+    nativePan = undefined;
+    if (pan.scroller.hasPointerCapture(pan.id)) pan.scroller.releasePointerCapture(pan.id);
+    nativeMomentum = pan.moving && !cancelled;
+    if (cancelled) emitNativeTouch('touchstart');
+  }
+
+  function startNativePan(event, element) {
+    if (!initializedLayout || window.getSelection()?.toString() || (window.visualViewport?.scale || 1) > 1.05) return;
+    const host = element.closest('.interactive-list, .sessions-list-control')
+      || element.closest('.interactive-session')?.querySelector('.interactive-list');
+    const scroller = host?.querySelector('.monaco-list-rows');
+    if (!scroller) return;
+    nativePan = { id: event.pointerId, scroller, x: event.clientX, y: event.clientY, lastEvent: event, moving: false };
+    // Initialize only Monaco's scrolling engine, not its row-focus handlers.
+    // The real touchstart stays uncancelled so browser text selection still works.
+    emitNativeTouch('touchstart', nativePan);
+  }
+
+  function rememberGesture(current) {
+    lastGesture = { ...current, ended: performance.now() };
+    clearTimeout(compatibilityClickTimer);
+    compatibilityClickTimer = setTimeout(() => { lastGesture = undefined; }, 900);
   }
 
   function submissionStates(element) {
@@ -519,36 +650,55 @@
   }
 
   on(window, 'pointerdown', event => {
+    if (nativeEvents.has(event)) return;
+    if (nativeMomentum) { emitNativeTouch('touchstart'); nativeMomentum = false; }
     if (event.isPrimary !== false) submissionStates(eventElement(event)).forEach(state => { state.reviewRequired = false; });
-    if (eventElement(event)?.closest('.tm-agents-nav button, .tm-agents-settings button, .tm-agents-more button')) {
+    if (eventElement(event)?.closest('.tm-agents-nav button, .tm-agents-more button')) {
       suppress(event, true);
       return;
     }
     if (event.pointerType !== 'touch') return;
     if (event.isPrimary === false) {
       if (gesture) gesture.moved = true;
+      finishNativePan(true);
       return;
     }
-    if (chatLink(eventElement(event))) { suppress(event); return; }
+    finishNativePan(true);
+    lastGesture = undefined;
+    const link = chatLink(eventElement(event));
+    if (link) { startNativePan(event, link); suppress(event); return; }
     const target = touchTarget(eventElement(event));
     if (!target) return;
     gesture = { ...target, id: event.pointerId, x: event.clientX, y: event.clientY, started: performance.now(), moved: false };
+    startNativePan(event, target.element);
     suppress(event);
   }, { capture: true });
   on(window, 'pointermove', event => {
-    if (gesture?.id === event.pointerId && Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 10) gesture.moved = true;
+    const moved = gesture?.id === event.pointerId && Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 6;
+    if (moved) gesture.moved = true;
+    if (nativePan?.id !== event.pointerId || window.getSelection()?.toString()) return;
+    nativePan.lastEvent = event;
+    if (!nativePan.moving && Math.hypot(event.clientX - nativePan.x, event.clientY - nativePan.y) <= 6) return;
+    nativePan.moving = true;
+    if (event.isTrusted && nativePan.scroller.isConnected && !nativePan.scroller.hasPointerCapture(event.pointerId)) {
+      nativePan.scroller.setPointerCapture(event.pointerId);
+    }
+    emitNativeTouch('touchmove', nativePan);
   }, { capture: true, passive: true });
   on(window, 'pointercancel', event => {
     if (gesture?.id === event.pointerId) {
-      lastGesture = { ...gesture, ended: performance.now() };
+      rememberGesture(gesture);
       gesture = undefined;
     }
+    if (nativePan?.id === event.pointerId) finishNativePan(true);
   }, { capture: true });
   on(window, 'pointerup', event => {
+    if (nativePan?.id === event.pointerId) finishNativePan();
     if (gesture?.id !== event.pointerId) return;
     const current = gesture;
     gesture = undefined;
-    lastGesture = { ...current, ended: performance.now() };
+    if (Math.hypot(event.clientX - current.x, event.clientY - current.y) > 6) current.moved = true;
+    rememberGesture(current);
     suppress(event);
     if (current.moved || performance.now() - current.started >= 450 || window.getSelection()?.toString()) return;
     if (!current.element.isConnected) return;
@@ -564,23 +714,44 @@
     }
   }, { capture: true });
 
-  for (const type of ['touchstart', 'touchend', '-monaco-gesturetap']) {
+  for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel']) {
+    on(window, type, event => {
+      if (nativeEvents.has(event) || !initializedLayout) return;
+      const changed = Array.from(event.changedTouches || []);
+      const element = eventElement(event);
+      const protectedTarget = element?.closest('.tm-agents-input') || touchTarget(element) || chatLink(element);
+      const tracked = changed.some(touch => blockedTouches.has(touch.identifier));
+      if (type === 'touchstart' && (protectedTarget || blockedTouches.size)) {
+        changed.forEach(touch => blockedTouches.add(touch.identifier));
+        suppress(event);
+      } else if (protectedTarget || tracked) {
+        suppress(event);
+      }
+      if (type === 'touchend' || type === 'touchcancel') {
+        changed.forEach(touch => blockedTouches.delete(touch.identifier));
+        if (type === 'touchcancel') finishNativePan(true);
+      }
+    }, { capture: true, passive: true });
+  }
+  for (const type of ['-monaco-gesturetap', '-monaco-gesturecontextmenu']) {
     on(window, type, event => {
       if (type === '-monaco-gesturetap' && guardSubmission(event)) return;
-      if (touchTarget(eventElement(event)) || chatLink(eventElement(event))) suppress(event, type === '-monaco-gesturetap');
-    }, { capture: true, passive: type !== '-monaco-gesturetap' });
+      const element = eventElement(event);
+      if ((nativePan && element && nativePan.scroller.isSameNode(element)) || touchTarget(element) || chatLink(element)) suppress(event, true);
+    }, { capture: true });
   }
   on(window, 'contextmenu', event => {
     const element = eventElement(event);
     if (element?.closest('.tm-agents-input') || touchTarget(element) || chatLink(element)) {
       if (gesture) gesture.moved = true;
+      finishNativePan(true);
       suppress(event);
     }
   }, { capture: true });
   on(window, 'click', event => {
     if (nativeEvents.has(event)) return;
     const target = eventElement(event);
-    const ownButton = target?.closest('.tm-agents-nav button, .tm-agents-settings button, .tm-agents-more button');
+    const ownButton = target?.closest('.tm-agents-nav button, .tm-agents-more button');
     if (ownButton && buttonActions.has(ownButton)) {
       suppress(event, true);
       if (!ownButton.disabled) buttonActions.get(ownButton)();
@@ -622,45 +793,55 @@
       workbenchObserver.observe(workbench, { attributes: true, attributeFilter: ['class'] });
       observedWorkbench = workbench;
     }
-    if (workbench.classList.contains('phone-layout')) {
-      if (!notice) {
-        notice = document.createElement('div');
-        notice.id = 'tm-agents-setup';
-        notice.setAttribute('role', 'status');
-        notice.textContent = 'Enable Desktop site in Firefox, then reload. The native phone UI omits the effort and context controls.';
-        document.body.append(notice);
-      }
+    const viewport = window.visualViewport;
+    const wideDesktop = !/Android/i.test(originalUserAgent) && innerWidth >= 640 &&
+      ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
+    if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
+      showSetupNotice(startupError || (wideDesktop
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3 uses the real phone viewport and selects desktop-style app controls itself.'
+        : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
     notice?.remove();
     notice = undefined;
+    if (nav) nav.hidden = false;
     const meta = document.querySelector('meta[name="viewport"]');
     if (meta && meta !== viewportMeta) {
       viewportMeta = meta;
       originalViewport = meta.getAttribute('content');
       meta.setAttribute('content', 'width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content');
     }
-    const viewport = window.visualViewport;
     const height = viewport && Math.abs(viewport.scale - 1) < .05 ? viewport.height : innerHeight;
-    document.documentElement.style.setProperty('--tm-agents-height', `${height}px`);
-    document.documentElement.classList.add('tm-agents-mobile');
+    const rootStyle = document.documentElement.style;
+    if (rootStyle.getPropertyValue('--tm-agents-height') !== `${height}px`) rootStyle.setProperty('--tm-agents-height', `${height}px`);
+    const touchAction = viewport && viewport.scale > 1.05 ? 'auto' : 'pinch-zoom';
+    if (rootStyle.getPropertyValue('--tm-agents-transcript-touch-action') !== touchAction) rootStyle.setProperty('--tm-agents-transcript-touch-action', touchAction);
+    if (!document.documentElement.classList.contains('tm-agents-mobile')) document.documentElement.classList.add('tm-agents-mobile');
     createNavigation();
     if (!initializedLayout) {
       initializedLayout = true;
       setView('chat');
     }
+    stretchPaneContents();
     for (const [editor, state] of editors) {
       if (!editor.isConnected) {
         state.observer?.disconnect();
         cancelAnimationFrame(state.nativeFrame);
+        state.editor.removeAttribute('data-tm-agents-native');
+        state.host.classList.remove('tm-agents-editor-host');
         state.input.remove();
-        state.settings.remove();
         state.status.remove();
         editors.delete(editor);
+      } else {
+        const visible = isLaidOut(editor);
+        if (visible && !state.visible) {
+          if (state.pendingSync) sync(state);
+          else refreshNative(state);
+        }
+        state.visible = visible;
       }
     }
     document.querySelectorAll(editorSelector).forEach(attachEditor);
-    editors.forEach(updateModelSettings);
     const focusedEditor = [...editors.values()].find(state =>
       state.input === document.activeElement || state.editor.contains(document.activeElement));
     if (focusedEditor) activeEditor = focusedEditor;
@@ -677,40 +858,69 @@
     if (!frame && !disposed) frame = requestAnimationFrame(refresh);
   }
 
-  const observer = new MutationObserver(scheduleRefresh);
+  function needsLayoutRefresh(records) {
+    const hosts = '.interactive-input-editor, .sessions-chat-editor';
+    const structure = '.agent-sessions-workbench, .part.sidebar, .part.editor, .part.sessionspart, .part.panel, .interactive-input-editor, .sessions-chat-editor';
+    for (const record of records) {
+      const parent = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      for (const node of [...record.addedNodes, ...record.removedNodes]) {
+        if (node.nodeType !== 1) continue;
+        if (node.matches(structure) || node.querySelector(structure)) return true;
+        if (node.matches('.monaco-editor') && (editors.has(node) || parent?.closest(hosts))) return true;
+        if (parent?.closest('.part.sidebar, .part.editor') &&
+            (node.matches('.sessions-list-control, [role="tree"], .part.auxiliarybar') ||
+             node.querySelector('.sessions-list-control, [role="tree"], .part.auxiliarybar'))) return true;
+      }
+    }
+    return false;
+  }
+
+  const observer = new MutationObserver(records => {
+    if (needsLayoutRefresh(records)) scheduleRefresh();
+  });
   const workbenchObserver = new MutationObserver(scheduleRefresh);
-  observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['aria-label', 'aria-disabled'] });
+  observer.observe(document, { subtree: true, childList: true });
   on(document, 'DOMContentLoaded', scheduleRefresh);
   on(window, 'resize', scheduleRefresh);
   on(window.visualViewport || window, 'resize', scheduleRefresh);
   window[instanceKey] = {
     dispose() {
+      finishNativePan(true);
+      if (nativeMomentum) emitNativeTouch('touchstart');
       disposed = true;
       controller.abort();
       observer.disconnect();
       workbenchObserver.disconnect();
       cancelAnimationFrame(frame);
+      clearTimeout(compatibilityClickTimer);
+      blockedTouches.clear();
       for (const state of editors.values()) {
         state.observer?.disconnect();
         cancelAnimationFrame(state.nativeFrame);
         state.editor.removeAttribute('data-tm-agents-native');
         state.host.classList.remove('tm-agents-editor-host');
         state.input.remove();
-        state.settings.remove();
         state.status.remove();
       }
       nav?.remove();
       notice?.remove();
       document.querySelector('.tm-agents-more')?.remove();
       style.remove();
+      for (const element of widthOverrides) element.removeAttribute('data-tm-agents-fill-width');
+      widthOverrides.clear();
       dockedComposer?.removeAttribute('data-tm-agents-docked');
       if (viewportMeta?.isConnected) {
         if (originalViewport === null) viewportMeta.removeAttribute('content');
         else viewportMeta.setAttribute('content', originalViewport);
       }
       document.documentElement.style.removeProperty('--tm-agents-height');
+      document.documentElement.style.removeProperty('--tm-agents-transcript-touch-action');
       document.documentElement.classList.remove('tm-agents-mobile');
       delete document.documentElement.dataset.tmAgentsView;
+      if (presentationUserAgent && Object.getOwnPropertyDescriptor(pageNavigator, 'userAgent')?.get === presentationUserAgent) {
+        if (originalUserAgentDescriptor) Object.defineProperty(pageNavigator, 'userAgent', originalUserAgentDescriptor);
+        else delete pageNavigator.userAgent;
+      }
       delete window[instanceKey];
     },
   };

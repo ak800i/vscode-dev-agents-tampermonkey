@@ -4,24 +4,38 @@ const { test, expect } = require('@playwright/test');
 
 const root = path.resolve(__dirname, '..');
 const scriptPath = path.join(root, 'vscode-agents-mobile.user.js');
+const androidFirefoxUA = 'Mozilla/5.0 (Android 15; Mobile; rv:157.0) Gecko/157.0 Firefox/157.0';
+const desktopFirefoxUA = 'Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0';
 
-async function openFixture(page, context, { mobile = true, phoneLayout = false } = {}) {
+function initializeFixture({ mobile, wideDesktop, lockUserAgent }) {
+  const original = window.matchMedia.bind(window);
+  window.matchMedia = query => {
+    const result = original(query);
+    if (/pointer:\s*coarse/.test(query)) Object.defineProperty(result, 'matches', { value: mobile });
+    return result;
+  };
+  if (lockUserAgent) {
+    Object.defineProperty(navigator, 'userAgent', { value: navigator.userAgent, configurable: false });
+  }
+  if (wideDesktop) {
+    new MutationObserver(() => {
+      const meta = document.querySelector('meta[name="viewport"]');
+      if (meta && meta.content !== 'width=980') meta.content = 'width=980';
+    }).observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['content'] });
+  }
+}
+
+async function openFixture(page, context, { mobile = true, phoneLayout = false, wideDesktop = false, lockUserAgent = false } = {}) {
   let script = '';
   try {
     script = await fs.readFile(scriptPath, 'utf8');
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
-  await page.addInitScript(({ mobile }) => {
-    const original = window.matchMedia.bind(window);
-    window.matchMedia = query => {
-      const result = original(query);
-      if (/pointer:\s*coarse/.test(query)) Object.defineProperty(result, 'matches', { value: mobile });
-      return result;
-    };
-  }, { mobile });
-  await page.addInitScript({ content: script });
-  await page.goto('http://127.0.0.1:31137/agents');
+  await page.addInitScript({
+    content: `(${initializeFixture.toString()})(${JSON.stringify({ mobile, wideDesktop, lockUserAgent })});\n${script}`,
+  });
+  await page.goto(`http://127.0.0.1:31137/agents${wideDesktop ? '?desktopViewport=980' : ''}`);
   await page.waitForFunction(() => window.fixture?.ready || window.fixtureError);
   expect(await page.evaluate(() => window.fixtureError)).toBeUndefined();
   if (phoneLayout) {
@@ -32,6 +46,11 @@ async function openFixture(page, context, { mobile = true, phoneLayout = false }
 test.beforeEach(async ({ page, context }) => {
   await openFixture(page, context);
 });
+
+async function chooseEditor(page, label) {
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'More', exact: true }).click();
+  await page.getByRole('menuitem', { name: label, exact: true }).click();
+}
 
 test('provides a native selectable textarea, without accessing Monaco globals', async ({ page }) => {
   const input = page.locator('.tm-agents-input');
@@ -74,11 +93,11 @@ test('retains an existing multiline draft and tracks external native changes', a
 
 test('native-editor handoff preserves the draft and does not steal native focus', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Keep this draft');
-  await page.getByRole('button', { name: 'Native editor', exact: true }).click();
+  await chooseEditor(page, 'Native editor');
   await page.keyboard.insertText(' plus native text');
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('Keep this draft plus native text');
   await expect.poll(() => page.evaluate(() => document.activeElement?.classList.contains('inputarea'))).toBe(true);
-  await page.getByRole('button', { name: 'Touch editor', exact: true }).click();
+  await chooseEditor(page, 'Touch editor');
   await expect(page.locator('.tm-agents-input')).toHaveValue('Keep this draft plus native text');
 });
 
@@ -105,28 +124,40 @@ test('IME composition is not mirrored or sent until composition finishes', async
   await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
 });
 
-test('effort and context show native values and operate the native settings', async ({ page }) => {
-  await expect(page.getByRole('button', { name: 'Effort: High', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Context: 200K', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Effort: High', exact: true }).click();
+test('only native model controls remain and their settings still work', async ({ page }) => {
+  await expect(page.locator('.tm-agents-settings')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Models, Example Model', exact: true })).toBeVisible();
+  const details = page.locator('.model-picker-config-summary');
+  await expect(details).toBeVisible();
+  await details.click();
   expect(await page.evaluate(() => window.fixtureError)).toBeUndefined();
   await expect.poll(() => page.evaluate(() => fixture.detailsOpens)).toBe(1);
   await page.getByRole('button', { name: 'Low', exact: true }).click();
   await page.getByRole('button', { name: '1M', exact: true }).click();
   await page.getByRole('button', { name: 'Done', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Effort: Low', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Context: 1M', exact: true })).toBeVisible();
+  await expect(details).toHaveText('Low - 1M');
+  await expect(details).toHaveAttribute('aria-label', /Thinking Level: Low, Context Size: 1M/);
   await expect.poll(() => page.evaluate(() => fixture.detailsOpens)).toBe(1);
 });
 
-test('model changes do not reuse stale effort or context values', async ({ page }) => {
+test('model changes do not create mirrored model controls', async ({ page }) => {
   await page.evaluate(() => {
     document.querySelector('.model-picker-name').setAttribute('aria-label', 'Models, Auto');
     document.querySelector('.model-picker-config').setAttribute('aria-label', 'Auto details, Optimize for: Balance');
   });
-  await expect(page.getByRole('button', { name: 'Effort: Automatic', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Context: Automatic', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Effort: High', exact: true })).toHaveCount(0);
+  await expect(page.locator('.tm-agents-settings')).toHaveCount(0);
+  await expect(page.locator('.model-picker-config-summary')).toBeVisible();
+  await expect(page.locator('.model-picker-config-summary')).toHaveAttribute('aria-label', 'Auto details, Optimize for: Balance');
+});
+
+test('native model-detail options have readable text and touch-sized targets', async ({ page }) => {
+  await page.locator('.model-picker-config-summary').click();
+  const metrics = await page.getByRole('button', { name: 'Low', exact: true }).evaluate(e => ({
+    font: parseFloat(getComputedStyle(e).fontSize),
+    height: e.getBoundingClientRect().height,
+  }));
+  expect(metrics.font).toBeGreaterThanOrEqual(16);
+  expect(metrics.height).toBeGreaterThanOrEqual(44);
 });
 
 test('touching the parent chevron toggles only once and does not open a session', async ({ page }) => {
@@ -219,7 +250,8 @@ test('rerendering the same composer does not duplicate the textarea or controls'
     for (let i = 0; i < 15; i++) document.querySelector('.model-picker-config').setAttribute('title', String(i));
   });
   await expect(page.locator('.tm-agents-input')).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Effort: High', exact: true })).toHaveCount(1);
+  await expect(page.locator('.tm-agents-settings')).toHaveCount(0);
+  await expect(page.locator('.model-picker-config-summary')).toHaveCount(1);
   await expect(page.locator('.tm-agents-input')).toHaveValue('Keep this draft');
 });
 
@@ -246,6 +278,23 @@ test('EditContext input uses native CRLF offsets without corrupting Unicode', as
     await expect.poll(() => page.evaluate(() => fixture.text())).toBe(value);
     await expect(page.locator('.tm-agents-status')).toHaveText('');
   }
+});
+
+test('EditContext replacements do not depend on a render frame between inputs', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'EditContext is a Chromium-specific input path.');
+  await page.evaluate(() => fixture.editor.updateOptions({ editContext: true }));
+  await expect(page.locator('.native-edit-context')).toHaveCount(1);
+  const values = ['first\nsecond', 'short\n', 'caf\u00e9\n\u6d4b\u8bd5', '', 'last'];
+  const result = await page.evaluate(values => {
+    const input = document.querySelector('.tm-agents-input');
+    return values.map(value => {
+      input.value = value;
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+      return fixture.text();
+    });
+  }, values);
+  expect(result).toEqual(values);
+  await expect(page.locator('.tm-agents-status')).toHaveText('');
 });
 
 test('a failed native update blocks both Send and Steer with Message', async ({ page }) => {
@@ -338,13 +387,40 @@ test('navigation exposes sessions, chat, and files without losing a draft', asyn
   await expect(page.locator('.tm-agents-input')).toHaveValue('Retain across tabs');
 });
 
-test('native-phone rendering explicitly requests Desktop site instead of pretending settings work', async ({ page }) => {
+test('native session list wrappers fill the phone width', async ({ page }) => {
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).click();
+  await expect.poll(() => page.getByRole('tree', { name: 'Sessions' }).evaluate(e => e.getBoundingClientRect().width)).toBeGreaterThanOrEqual(366);
+  await expect.poll(() => page.locator('.session-title').evaluate(e => parseFloat(getComputedStyle(e).fontSize))).toBeGreaterThanOrEqual(16);
+});
+
+test('inactive chat descendants cannot bleed through the Sessions view', async ({ page }) => {
+  await page.locator('.interactive-response .rendered-markdown').evaluate(e => { e.style.visibility = 'visible'; });
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).click();
+  await expect(page.getByText('Response text to select.')).not.toBeVisible();
+});
+
+test('a hidden composer is resynchronized when returning to Chat', async ({ page }) => {
+  await page.locator('.tm-agents-input').fill('Before switching');
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  await nav.getByRole('button', { name: 'Sessions', exact: true }).click();
+  await page.evaluate(() => fixture.setText('Changed while hidden'));
+  await nav.getByRole('button', { name: 'Chat', exact: true }).click();
+  await expect(page.locator('.tm-agents-input')).toHaveValue('Changed while hidden');
+  await expect(page.locator('.tm-agents-status')).toHaveText('');
+});
+
+test('a late-loaded phone renderer requests a reload in normal browser mode', async ({ page }) => {
   await page.evaluate(() => document.querySelector('.monaco-workbench').classList.add('phone-layout'));
-  await expect(page.getByRole('status').filter({ hasText: 'Desktop site' })).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'Desktop site OFF' })).toBeVisible();
 });
 
 test('a fine-pointer desktop is left unchanged', async ({ browser }) => {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 1000 },
+    screen: { width: 1440, height: 1000 },
+    hasTouch: false,
+    userAgent: desktopFirefoxUA,
+  });
   const page = await context.newPage();
   try {
     await openFixture(page, context, { mobile: false });
@@ -353,4 +429,339 @@ test('a fine-pointer desktop is left unchanged', async ({ browser }) => {
   } finally {
     await context.close();
   }
+});
+
+test.describe('Android Firefox normal mode', () => {
+  test.use({ userAgent: androidFirefoxUA, screen: { width: 390, height: 844 } });
+
+  test('selects desktop app controls at startup without a desktop-sized viewport', async ({ page }) => {
+    await expect.poll(() => page.evaluate(() => fixture.initialLayout)).toBe('desktop');
+    const metrics = await page.evaluate(() => {
+      const button = document.querySelector('.tm-agents-nav button');
+      const scale = visualViewport.scale;
+      return {
+        width: innerWidth,
+        effectiveHeight: button.getBoundingClientRect().height * scale,
+        effectiveFont: parseFloat(getComputedStyle(button).fontSize) * scale,
+        ua: navigator.userAgent,
+      };
+    });
+    expect(metrics.width).toBe(390);
+    expect(metrics.effectiveHeight).toBeGreaterThanOrEqual(44);
+    expect(metrics.effectiveFont).toBeGreaterThanOrEqual(16);
+    expect(metrics.ua).toContain('Android');
+    expect(metrics.ua).toContain('Linux');
+    expect(metrics.ua).toContain('Firefox/157.0');
+    expect(metrics.ua).not.toContain('Mobi');
+    await expect(page.locator('.model-picker-config-summary')).toBeVisible();
+  });
+
+  test('keeps HTTP browser identity unchanged and restores the page identity on disposal', async ({ page }) => {
+    const networkUA = await page.evaluate(async () => (await (await fetch('/request-headers')).json()).userAgent);
+    expect(networkUA).toBe(androidFirefoxUA);
+    await page.evaluate(() => window.__vscodeAgentsMobile.dispose());
+    expect(await page.evaluate(() => navigator.userAgent)).toBe(androidFirefoxUA);
+  });
+
+  test('reports a refused presentation override rather than claiming controls are available', async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, userAgent: androidFirefoxUA });
+    try {
+      const page = await context.newPage();
+      await openFixture(page, context, { lockUserAgent: true });
+      await expect(page.getByRole('status')).toContainText('could not select');
+      await expect(page.locator('.tm-agents-nav')).toHaveCount(0);
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+test('wide desktop zoom-out gives a legible instruction to turn Desktop site off', async ({ browser, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Chromium supplies the physical mobile page-scale emulation.');
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    screen: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    userAgent: desktopFirefoxUA,
+  });
+  try {
+    const page = await context.newPage();
+    await openFixture(page, context, { wideDesktop: true });
+    await expect.poll(() => page.evaluate(() => innerWidth)).toBeGreaterThanOrEqual(980);
+    const notice = page.getByRole('status').filter({ hasText: 'Desktop site OFF' });
+    await expect(notice).toBeVisible();
+    const metrics = await notice.evaluate(e => ({
+      textSize: parseFloat(getComputedStyle(e).fontSize) * visualViewport.scale,
+      width: e.getBoundingClientRect().width * visualViewport.scale,
+    }));
+    expect(metrics.textSize).toBeGreaterThanOrEqual(15.9);
+    expect(metrics.width).toBeLessThanOrEqual(390);
+  } finally {
+    await context.close();
+  }
+});
+
+test('a physical-width mobile viewport renders readable Sessions and Chat without scaling down', async ({ browser, browserName }, testInfo) => {
+  test.skip(browserName !== 'chromium', 'Chromium supplies the physical mobile page-scale emulation.');
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    screen: { width: 390, height: 844 },
+    isMobile: true,
+    hasTouch: true,
+    userAgent: androidFirefoxUA,
+  });
+  try {
+    const page = await context.newPage();
+    await openFixture(page, context);
+    await expect.poll(() => page.evaluate(() => fixture.initialLayout)).toBe('desktop');
+    await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).tap();
+    const metrics = await page.evaluate(() => {
+      const nav = document.querySelector('.tm-agents-nav button');
+      const tree = document.querySelector('[role="tree"]');
+      const scale = visualViewport.scale;
+      return {
+        scale,
+        navHeight: nav.getBoundingClientRect().height * scale,
+        titleFont: parseFloat(getComputedStyle(document.querySelector('.session-title')).fontSize) * scale,
+        treeWidth: tree.getBoundingClientRect().width * scale,
+      };
+    });
+    expect(metrics.scale).toBeCloseTo(1, 2);
+    expect(metrics.navHeight).toBeGreaterThanOrEqual(44);
+    expect(metrics.titleFont).toBeGreaterThanOrEqual(16);
+    expect(metrics.treeWidth).toBeGreaterThanOrEqual(366);
+    await page.screenshot({ path: testInfo.outputPath('phone-sessions.png') });
+    await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Chat', exact: true }).tap();
+    await page.locator('.tm-agents-input').fill('Phone-sized input\nEnter stays a newline.');
+    await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
+    await page.screenshot({ path: testInfo.outputPath('phone-chat.png') });
+  } finally {
+    await context.close();
+  }
+});
+
+test('sandbox startup changes the provided page navigator rather than its own world', async ({ page }) => {
+  await page.evaluate(ua => {
+    window.__vscodeAgentsMobile.dispose();
+    window.fixtureParentAgent = navigator.userAgent;
+    const iframe = document.createElement('iframe');
+    iframe.id = 'page-world-fixture';
+    document.body.append(iframe);
+    Object.defineProperty(iframe.contentWindow.navigator, 'userAgent', { configurable: true, value: ua });
+    window.unsafeWindow = iframe.contentWindow;
+    window.exportFunction = (getter, target) => {
+      window.fixtureExportTargetCorrect = target === iframe.contentWindow;
+      return getter;
+    };
+  }, androidFirefoxUA);
+  await page.addScriptTag({ path: scriptPath });
+  const result = await page.evaluate(() => ({
+    pageAgent: unsafeWindow.navigator.userAgent,
+    ownAgentUnchanged: navigator.userAgent === window.fixtureParentAgent,
+    exportedToPage: window.fixtureExportTargetCorrect,
+  }));
+  expect(result.pageAgent).toContain('Linux; Android');
+  expect(result.pageAgent).not.toContain('Mobi');
+  expect(result.ownAgentUnchanged).toBe(true);
+  expect(result.exportedToPage).toBe(true);
+  await page.evaluate(() => window.__vscodeAgentsMobile.dispose());
+  expect(await page.evaluate(() => unsafeWindow.navigator.userAgent)).toBe(androidFirefoxUA);
+});
+
+test('sandbox gesture guards resolve the page event and cross-realm target', async ({ page }) => {
+  await page.locator('.tm-agents-input').fill('Confirmed draft');
+  await page.evaluate(() => document.querySelector('.inputarea')
+    .addEventListener('input', event => event.stopImmediatePropagation(), true));
+  await page.locator('.tm-agents-input').fill('Unsynced draft');
+  await page.evaluate(() => {
+    const iframe = document.createElement('iframe');
+    document.body.append(iframe);
+    const send = iframe.contentDocument.createElement('button');
+    send.className = 'native-send';
+    send.setAttribute('aria-label', 'Send');
+    send.textContent = 'Send';
+    document.querySelector('.native-send').replaceWith(send);
+    const container = send.parentElement;
+    container.addEventListener('-monaco-gesturetap', () => fixture.sends.push(fixture.text()));
+    const event = new Event('-monaco-gesturetap', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'wrappedJSObject', { value: { initialTarget: send } });
+    container.dispatchEvent(event);
+  });
+  await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
+});
+
+async function panTranscript(page, distance) {
+  return page.evaluate(async distance => {
+    const rows = document.querySelector('.interactive-list .monaco-list-rows');
+    const target = rows.querySelector('.rendered-markdown p');
+    const bounds = target.getBoundingClientRect();
+    const x = bounds.x + 40;
+    const startY = bounds.y + 30;
+    const pointerId = 17;
+    const touchId = 4;
+    const pointer = (type, y, element) => element.dispatchEvent(new PointerEvent(type, {
+      pointerId, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y,
+      bubbles: true, cancelable: true,
+    }));
+    const touchEvent = (type, y, element) => {
+      const touch = new Touch({ identifier: touchId, target, clientX: x, clientY: y, pageX: x, pageY: y });
+      const ending = type === 'touchend';
+      const event = new TouchEvent(type, {
+        bubbles: true, cancelable: true, changedTouches: [touch],
+        touches: ending ? [] : [touch], targetTouches: ending ? [] : [touch],
+      });
+      element.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    pointer('pointerdown', startY, target);
+    const startPrevented = touchEvent('touchstart', startY, target);
+    for (let step = 1; step <= 4; step++) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const y = startY - distance * step / 4;
+      pointer('pointermove', y, rows);
+      touchEvent('touchmove', y, rows);
+    }
+    pointer('pointerup', startY - distance, rows);
+    touchEvent('touchend', startY - distance, rows);
+    return { startPrevented, scrollTop: fixture.transcript.scrollTop, edits: fixture.edits };
+  }, distance);
+}
+
+test('the composer has no added control row and keeps the native picker visible', async ({ page }) => {
+  await expect(page.locator('.tm-agents-settings')).toHaveCount(0);
+  await expect(page.locator('.model-picker-config-summary')).toBeVisible();
+  await expect.poll(() => page.locator('.interactive-input-part').evaluate(e => e.getBoundingClientRect().height)).toBeLessThan(190);
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'More', exact: true }).click();
+  await expect(page.getByRole('menuitem', { name: 'Native editor', exact: true })).toBeVisible();
+});
+
+test('touch swipes scroll the real virtualized transcript without editing a message', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(400));
+  const result = await panTranscript(page, 180);
+  expect(result.startPrevented).toBe(false);
+  expect(result.scrollTop).toBeGreaterThan(100);
+  expect(result.edits).toBe(0);
+  await page.evaluate(() => { fixture.transcript.scrollTop = 1200; });
+  const reverse = await panTranscript(page, -180);
+  expect(reverse.scrollTop).toBeLessThan(1150);
+  expect(reverse.edits).toBe(0);
+});
+
+test('small transcript pans do not turn into prompt edits', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(40));
+  const result = await panTranscript(page, 8);
+  expect(result.scrollTop).toBeGreaterThan(0);
+  expect(result.edits).toBe(0);
+});
+
+test('long-press selection stays native inside the real virtualized transcript', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(40));
+  const result = await page.evaluate(() => {
+    const target = document.querySelector('.interactive-list .rendered-markdown p');
+    const rect = target.getBoundingClientRect();
+    target.dispatchEvent(new PointerEvent('pointerdown', {
+      pointerId: 21, pointerType: 'touch', isPrimary: true, clientX: rect.x + 20, clientY: rect.y + 10, bubbles: true,
+    }));
+    const touch = new Touch({ identifier: 3, target, clientX: rect.x + 20, clientY: rect.y + 10 });
+    const start = new TouchEvent('touchstart', { bubbles: true, cancelable: true, touches: [touch], targetTouches: [touch], changedTouches: [touch] });
+    target.dispatchEvent(start);
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    const menu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    target.dispatchEvent(menu);
+    target.dispatchEvent(new PointerEvent('pointerup', { pointerId: 21, pointerType: 'touch', isPrimary: true, bubbles: true }));
+    target.dispatchEvent(new TouchEvent('touchend', { bubbles: true, cancelable: true, changedTouches: [touch] }));
+    return { startPrevented: start.defaultPrevented, menuPrevented: menu.defaultPrevented, menus: fixture.menus, edits: fixture.edits, selected: selection.toString().length > 0 };
+  });
+  expect(result).toEqual({ startPrevented: false, menuPrevented: false, menus: 0, edits: 0, selected: true });
+});
+
+test('transcript updates do not trigger full-document layout rescans', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(3000));
+  const scans = await page.evaluate(async () => {
+    for (let i = 0; i < 6; i++) await new Promise(resolve => requestAnimationFrame(resolve));
+    const original = document.querySelectorAll;
+    let count = 0;
+    document.querySelectorAll = function(selector) {
+      if ((selector.includes('.part.sidebar') && selector.includes('.part.editor')) ||
+          (selector.includes('monaco-editor') && selector.includes('sessions-chat-editor'))) count++;
+      return original.call(this, selector);
+    };
+    try {
+      const paragraph = document.querySelector('.interactive-list .rendered-markdown p');
+      for (let i = 0; i < 20; i++) {
+        paragraph.textContent = `Streaming transcript update ${i}`;
+        paragraph.setAttribute('aria-label', `Transcript update ${i}`);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      return count;
+    } finally {
+      delete document.querySelectorAll;
+    }
+  });
+  console.log(`Transcript-only full-document scans: ${scans}`);
+  expect(scans).toBe(0);
+});
+
+test('new inline editors are still discovered inside transcript messages', async ({ page }) => {
+  await page.evaluate(() => fixture.mountInlineEditor());
+  const input = page.locator('.interactive-request .tm-agents-input');
+  await expect(input).toHaveValue('Earlier prompt');
+  await input.fill('Edited from the touch input');
+  await expect.poll(() => page.evaluate(() => fixture.inlineEditor.getValue())).toBe('Edited from the touch input');
+  await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
+});
+
+test('real touch input keeps scrolling after the starting row is virtualized away', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Trusted touch injection uses Chromium CDP.');
+  await page.evaluate(() => {
+    fixture.mountTranscript(500);
+    fixture.transcript.scrollTop = 60;
+  });
+  const point = await page.evaluate(() => {
+    const body = document.querySelector('.interactive-list .rendered-markdown');
+    const r = body.getBoundingClientRect();
+    return { x: r.left + 40, y: r.bottom - 4 };
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 0, ...point }] });
+    for (let i = 1; i <= 4; i++) {
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ id: 0, x: point.x, y: point.y - i * 18 }] });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect.poll(() => page.evaluate(() => fixture.transcript.scrollTop)).toBeGreaterThan(120);
+    await expect.poll(() => page.evaluate(() => fixture.edits)).toBe(0);
+    await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'chat');
+  } finally {
+    await cdp.detach();
+  }
+});
+
+test('idle input rerenders do not repeatedly copy or focus the native editor', async ({ page }) => {
+  await page.locator('.tm-agents-input').fill('Same input');
+  const copies = await page.evaluate(async () => {
+    for (let i = 0; i < 6; i++) await new Promise(resolve => requestAnimationFrame(resolve));
+    let count = 0;
+    const capture = () => count++;
+    document.addEventListener('copy', capture, true);
+    try {
+      const line = document.querySelector('.interactive-input-editor .view-line');
+      for (let i = 0; i < 12; i++) {
+        if (line.firstChild) line.replaceChild(line.firstChild.cloneNode(true), line.firstChild);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      return count;
+    } finally {
+      document.removeEventListener('copy', capture, true);
+    }
+  });
+  expect(copies).toBe(0);
 });

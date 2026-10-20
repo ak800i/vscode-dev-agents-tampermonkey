@@ -15,9 +15,10 @@
     .chat-markdown-part { padding: 12px; background: #ddd; }
     .session-chat-twistie { display: inline-block; width: 20px; height: 30px; }
     .session-item { display: inline-block; }
+    .session-title { font-size: 13px; }
     [role="dialog"] { position: fixed; z-index: 2500; top: 50px; left: 8px; background: white; padding: 12px; border: 1px solid; }
   </style>
-  <script src="/vs/loader.js"></script>
+  <link rel="stylesheet" href="/fixture-runtime.css">
 </head>
 <body>
   <div class="monaco-workbench agent-sessions-workbench nosidebar noauxiliarybar noeditorpane">
@@ -27,13 +28,17 @@
       <button aria-label="Signed in with GitHub">Account</button>
     </div>
     <div class="part sidebar" id="workbench.parts.sidebar">
-      <div class="sessions-list-control">
-        <div role="tree" aria-label="Sessions">
-          <div role="treeitem" aria-label="Parent session" aria-expanded="true">
-            <div class="monaco-tl-twistie collapsible session-chat-twistie">v</div>
-            <div class="session-item">Parent session</div>
+      <div class="content" style="width: 270px">
+        <div class="agent-sessions-control-container" style="width: 270px">
+          <div class="sessions-list-control" style="width: 270px">
+            <div class="monaco-list" role="tree" aria-label="Sessions" style="width: 270px">
+              <div role="treeitem" aria-label="Parent session" aria-expanded="true">
+                <div class="monaco-tl-twistie collapsible session-chat-twistie">v</div>
+                <div class="session-item"><span class="session-title">Parent session</span></div>
+              </div>
+              <div role="treeitem" aria-label="Child session">Child session</div>
+            </div>
           </div>
-          <div role="treeitem" aria-label="Child session">Child session</div>
         </div>
       </div>
     </div>
@@ -71,8 +76,9 @@
     <div class="part editor" id="workbench.parts.editor"><div>Files</div></div>
   </div>
   <script>
-    require.config({ paths: { vs: '/vs' } });
-    require(['vs/editor'], monaco => {
+    const initialLayout = navigator.userAgent.includes('Mobi') && innerWidth < 640 ? 'phone' : 'desktop';
+    document.querySelector('.monaco-workbench').classList.toggle('phone-layout', initialLayout === 'phone');
+    window.initializeFixtureRuntime = (monaco, List) => {
       const editorHost = document.querySelector('.interactive-input-editor');
       const editor = monaco.editor.create(editorHost, {
         value: '',
@@ -86,6 +92,7 @@
       });
       const fixture = window.fixture = {
         editor,
+        initialLayout,
         sends: [],
         openedSessions: 0,
         edits: 0,
@@ -96,6 +103,68 @@
         detailsOpens: 0,
         setText: value => editor.setValue(value),
         text: () => editor.getModel().getValue(monaco.editor.EndOfLinePreference.LF),
+      };
+      fixture.mountTranscript = (count = 200) => {
+        document.querySelector('.interactive-session > [role="list"]')?.remove();
+        const host = document.createElement('div');
+        host.className = 'interactive-list';
+        host.style.height = '340px';
+        document.querySelector('.interactive-session').prepend(host);
+        const renderer = {
+          templateId: 'message',
+          renderTemplate(container) {
+            const row = document.createElement('div');
+            row.className = 'interactive-item-container';
+            const body = document.createElement('div');
+            body.className = 'rendered-markdown clickable';
+            body.style.whiteSpace = 'normal';
+            body.style.padding = '8px';
+            const paragraph = document.createElement('p');
+            body.append(paragraph);
+            row.append(body);
+            container.append(row);
+            const template = { row, body, paragraph };
+            body.addEventListener('click', () => {
+              if (row.classList.contains('interactive-request') && !window.getSelection().toString()) fixture.edits++;
+            });
+            return template;
+          },
+          renderElement(item, index, template) {
+            template.row.classList.toggle('interactive-request', item.request);
+            template.row.classList.toggle('interactive-response', !item.request);
+            template.paragraph.textContent = `Message ${item.index}: readable conversation content for scrolling and selection.`;
+          },
+          disposeTemplate() {},
+        };
+        const list = new List('transcript-fixture', host, {
+          getHeight: () => 120,
+          getTemplateId: () => 'message',
+        }, [renderer], {
+          accessibilityProvider: {
+            getAriaLabel: item => `Message ${item.index}`,
+            getWidgetAriaLabel: () => 'Chat transcript',
+          },
+          keyboardSupport: false,
+          mouseSupport: true,
+          smoothScrolling: false,
+        });
+        list.layout(340, host.clientWidth);
+        list.splice(0, 0, Array.from({ length: count }, (_, index) => ({ index, request: index % 3 === 0 })));
+        list.onContextMenu(() => fixture.menus++);
+        fixture.transcript = list;
+        return list.length;
+      };
+      fixture.mountInlineEditor = () => {
+        const part = document.createElement('div');
+        part.className = 'interactive-input-part';
+        const host = document.createElement('div');
+        host.className = 'interactive-input-editor';
+        part.append(host);
+        document.querySelector('.interactive-request').append(part);
+        fixture.inlineEditor = monaco.editor.create(host, {
+          value: 'Earlier prompt', language: 'plaintext', automaticLayout: true,
+          minimap: { enabled: false }, editContext: false,
+        });
       };
       // The installed app does not export Monaco's API; exercise the DOM bridge.
       window.monaco = undefined;
@@ -117,7 +186,7 @@
       const showDetails = () => {
         fixture.detailsOpens++;
         const dialog = document.createElement('div');
-        dialog.className = 'context-view';
+        dialog.className = 'context-view tabbed-action-list-details';
         dialog.role = 'dialog';
         dialog.setAttribute('aria-label', 'Example Model Details');
         dialog.innerHTML = '<h3>Thinking Level</h3><button data-effort="Low">Low</button>' +
@@ -133,6 +202,8 @@
             details.setAttribute('aria-label', details.getAttribute('aria-label')
               .replace(/Context Size: [^,]+/, 'Context Size: ' + event.target.dataset.context));
           }
+          const label = details.getAttribute('aria-label');
+          details.textContent = `${label.match(/Thinking Level: ([^,]+)/)[1]} - ${label.match(/Context Size: ([^,]+)/)[1]}`;
           if (event.target.hasAttribute('data-close')) dialog.remove();
         });
         document.body.append(dialog);
@@ -189,7 +260,8 @@
         });
       }
       fixture.ready = true;
-    }, error => { window.fixtureError = String(error); });
+    };
   </script>
+  <script src="/fixture-runtime.js"></script>
 </body>
 </html>
