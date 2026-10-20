@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.1: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -13,6 +13,10 @@ Main chat text and session titles use 16px text, the navigation and script
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.1 fixes blank transcripts and broken jumps from the left prompt
+timeline after changing panes or loading history in the background. Inactive
+panes stay measurable by Monaco without being visible or accepting focus.
 
 Version 0.3 removes the duplicate model/effort/context button row. Use the native
 model picker and its adjacent effort/context summary below the input. The
@@ -114,6 +118,17 @@ inertia while keeping browser text selection separate. Tap-to-edit is suppressed
 when the touch moves, and the native-editor textarea keeps its normal touch
 handling.
 
+Version 0.3 hid inactive panes with `display: none`. Monaco continues measuring
+dynamic-height messages during background updates, so it could cache every
+message at zero height. The history and left-hand prompt list still existed,
+but the transcript was blank and native prompt jumps could not reveal the
+requested bubble. Version 0.3.1 hides panes and their descendants without
+removing their layout. The left timeline keeps using VS Code's own reveal
+action, with valid row heights. After a touch selection, the script also clears
+the native popup's lingering mouse-hover state so it does not keep covering the
+chosen message; mouse and keyboard activation keep their native behavior.
+Reload after updating to discard measurements cached by the old script.
+
 Transcript-only DOM changes no longer trigger full-document layout scans.
 Line-aware input fingerprints also avoid repeatedly focusing/copying the
 native editor when its rendered text has not changed. In the controlled
@@ -135,6 +150,10 @@ uses an Android Firefox user agent to exercise the Android input path. Layout
 tests cover fixed-width native pane wrappers, explicit visibility on hidden
 descendants, normal mobile startup, unchanged HTTP identity, and a real 980px
 mobile zoom-out in Chromium's device emulation.
+Dynamic-height transcript tests also cover history arriving while Chat is
+hidden, background remeasurement, and touch activation of the prompt timeline
+after switching panes. They check that the requested bubble is actually
+rendered at the top of the transcript, not just that a scroll offset changed.
 
 ```powershell
 npm ci

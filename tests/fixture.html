@@ -7,6 +7,7 @@
     body { margin: 0; font: 14px system-ui; }
     .part.titlebar { height: 44px; }
     .part.sessionspart { padding: 8px; }
+    .interactive-session { position: relative; }
     .interactive-input-editor { position: relative; height: 120px; }
     .monaco-editor { height: 120px; width: 360px; }
     .part.sidebar, .part.editor { display: none; }
@@ -16,6 +17,13 @@
     .session-chat-twistie { display: inline-block; width: 20px; height: 30px; }
     .session-item { display: inline-block; }
     .session-title { font-size: 13px; }
+    .prompt-timeline-rail { position: absolute; left: 0; top: 120px; z-index: 20; }
+    .prompt-timeline-gutter-rest { min-width: 24px; min-height: 44px; }
+    .prompt-timeline-gutter-panel {
+      position: absolute; left: 24px; top: -80px; width: 300px; max-height: 240px;
+      overflow: auto; background: white; border: 1px solid;
+    }
+    .prompt-timeline-gutter-row-jump { display: block; width: 100%; min-height: 44px; }
     [role="dialog"] { position: fixed; z-index: 2500; top: 50px; left: 8px; background: white; padding: 12px; border: 1px solid; }
   </style>
   <link rel="stylesheet" href="/fixture-runtime.css">
@@ -78,7 +86,7 @@
   <script>
     const initialLayout = navigator.userAgent.includes('Mobi') && innerWidth < 640 ? 'phone' : 'desktop';
     document.querySelector('.monaco-workbench').classList.toggle('phone-layout', initialLayout === 'phone');
-    window.initializeFixtureRuntime = (monaco, List) => {
+    window.initializeFixtureRuntime = (monaco, List, Gesture) => {
       const editorHost = document.querySelector('.interactive-input-editor');
       const editor = monaco.editor.create(editorHost, {
         value: '',
@@ -104,7 +112,7 @@
         setText: value => editor.setValue(value),
         text: () => editor.getModel().getValue(monaco.editor.EndOfLinePreference.LF),
       };
-      fixture.mountTranscript = (count = 200) => {
+      fixture.mountTranscript = (count = 200, { dynamicHeights = false, timeline = false } = {}) => {
         document.querySelector('.interactive-session > [role="list"]')?.remove();
         const host = document.createElement('div');
         host.className = 'interactive-list';
@@ -132,12 +140,15 @@
           renderElement(item, index, template) {
             template.row.classList.toggle('interactive-request', item.request);
             template.row.classList.toggle('interactive-response', !item.request);
+            template.row.dataset.messageIndex = String(item.index);
             template.paragraph.textContent = `Message ${item.index}: readable conversation content for scrolling and selection.`;
+            if (dynamicHeights) template.paragraph.textContent += ' Additional variable-height content.'.repeat(index % 3);
           },
           disposeTemplate() {},
         };
         const list = new List('transcript-fixture', host, {
           getHeight: () => 120,
+          hasDynamicHeight: () => dynamicHeights,
           getTemplateId: () => 'message',
         }, [renderer], {
           accessibilityProvider: {
@@ -147,11 +158,59 @@
           keyboardSupport: false,
           mouseSupport: true,
           smoothScrolling: false,
+          supportDynamicHeights: dynamicHeights,
         });
         list.layout(340, host.clientWidth);
         list.splice(0, 0, Array.from({ length: count }, (_, index) => ({ index, request: index % 3 === 0 })));
         list.onContextMenu(() => fixture.menus++);
         fixture.transcript = list;
+        if (timeline) {
+          const rail = document.createElement('div');
+          rail.className = 'prompt-timeline-rail prompt-timeline-rail-gutter';
+          const rest = document.createElement('button');
+          rest.className = 'prompt-timeline-gutter-rest';
+          rest.setAttribute('aria-label', 'Show prompts');
+          rest.textContent = '...';
+          const panel = document.createElement('div');
+          panel.className = 'prompt-timeline-gutter-panel';
+          panel.hidden = true;
+          let open = false;
+          let hovering = false;
+          const update = () => {
+            panel.hidden = !open && !hovering;
+            rest.setAttribute('aria-expanded', String(!panel.hidden));
+          };
+          const toggle = () => {
+            open = !open;
+            update();
+            if (open) panel.firstElementChild?.focus();
+            else rest.focus();
+          };
+          rail.addEventListener('mouseover', () => { hovering = true; update(); });
+          rail.addEventListener('mouseout', event => {
+            if (!rail.contains(event.relatedTarget)) { hovering = false; update(); }
+          });
+          Gesture.addTarget(rest);
+          rest.addEventListener('click', event => { event.preventDefault(); toggle(); });
+          rest.addEventListener('-monaco-gesturetap', toggle);
+          fixture.timelineJumps = [];
+          for (let index = 0; index < count; index += 3) {
+            const jump = document.createElement('button');
+            jump.className = 'prompt-timeline-gutter-row-jump';
+            jump.textContent = `Prompt ${index}`;
+            jump.addEventListener('click', () => {
+              fixture.timelineJumps.push(index);
+              list.reveal(index, 0);
+              open = false;
+              update();
+              rest.focus();
+            });
+            jump.addEventListener('focus', () => { open = true; update(); });
+            panel.append(jump);
+          }
+          rail.append(rest, panel);
+          document.querySelector('.interactive-session').append(rail);
+        }
         return list.length;
       };
       fixture.mountInlineEditor = () => {

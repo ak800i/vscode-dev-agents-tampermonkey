@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.0
+// @version      0.3.1
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -114,7 +114,17 @@
     html.tm-agents-mobile:not([data-tm-agents-view="chat"]) .part.sessionspart,
     html.tm-agents-mobile:not([data-tm-agents-view="sessions"]) .part.sidebar,
     html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor,
-    html.tm-agents-mobile:not([data-tm-agents-view="panel"]) .part.panel { display: none !important; }
+    html.tm-agents-mobile:not([data-tm-agents-view="panel"]) .part.panel {
+      opacity: 0 !important; visibility: hidden !important; pointer-events: none !important;
+    }
+    /* Monaco still measures inactive rows. Keep their layout, but hide even
+       descendants whose native styles explicitly make them visible. */
+    html.tm-agents-mobile:not([data-tm-agents-view="chat"]) .part.sessionspart *,
+    html.tm-agents-mobile:not([data-tm-agents-view="sessions"]) .part.sidebar *,
+    html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor *,
+    html.tm-agents-mobile:not([data-tm-agents-view="panel"]) .part.panel * {
+      visibility: hidden !important; pointer-events: none !important;
+    }
     html.tm-agents-mobile [data-tm-agents-fill-width] {
       width: 100% !important; min-width: 0 !important; max-width: none !important; box-sizing: border-box;
     }
@@ -757,6 +767,18 @@
       if (!ownButton.disabled) buttonActions.get(ownButton)();
       return;
     }
+    const timeline = event.pointerType === 'touch'
+      ? target?.closest('.prompt-timeline-gutter-row-jump')?.closest('.prompt-timeline-rail-gutter')
+      : undefined;
+    if (timeline) {
+      // Let the native jump finish, then clear the compatibility-mouse hover
+      // that otherwise keeps its popup covering the transcript after a tap.
+      requestAnimationFrame(() => {
+        if (!disposed && timeline.isConnected) {
+          timeline.dispatchEvent(new MouseEvent('mouseout', { relatedTarget: document.body }));
+        }
+      });
+    }
     if (lastGesture && performance.now() - lastGesture.ended < 900 && lastGesture.element.contains(target)) {
       suppress(event, true);
       return;
@@ -798,7 +820,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.1 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }

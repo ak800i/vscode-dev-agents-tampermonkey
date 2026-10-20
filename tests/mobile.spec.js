@@ -648,6 +648,69 @@ test('touch swipes scroll the real virtualized transcript without editing a mess
   expect(reverse.edits).toBe(0);
 });
 
+test('dynamic transcript loaded while Chat is inactive remains rendered and scrollable', async ({ page }) => {
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  await nav.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.evaluate(() => fixture.mountTranscript(90, { dynamicHeights: true }));
+  await nav.getByRole('button', { name: 'Chat', exact: true }).tap();
+  expect(await page.evaluate(() => fixture.transcript.contentHeight)).toBeGreaterThan(1000);
+  const first = page.locator('.interactive-list .rendered-markdown p').first();
+  await expect(first).toBeVisible();
+  await expect(first).toBeInViewport();
+  const before = await page.locator('.interactive-list .monaco-list-row').first().getAttribute('data-index');
+  const result = await panTranscript(page, 220);
+  expect(result.scrollTop).toBeGreaterThan(100);
+  expect(result.edits).toBe(0);
+  await expect.poll(() => page.locator('.interactive-list .monaco-list-row').first().getAttribute('data-index')).not.toBe(before);
+});
+
+test('timeline jump reveals the requested bubble after hidden dynamic transcript updates', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(90, { dynamicHeights: true, timeline: true }));
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  for (const pane of ['Files', 'Sessions']) {
+    await nav.getByRole('button', { name: pane, exact: true }).tap();
+    await page.evaluate(() => fixture.transcript.rerender());
+    await nav.getByRole('button', { name: 'Chat', exact: true }).tap();
+    for (const index of [54, 0, 84]) {
+      await page.getByRole('button', { name: 'Show prompts', exact: true }).tap();
+      await page.getByRole('button', { name: `Prompt ${index}`, exact: true }).tap();
+      expect(await page.evaluate(() => fixture.timelineJumps.at(-1))).toBe(index);
+      await expect(page.locator('.prompt-timeline-gutter-panel')).toBeHidden();
+      const target = page.locator(`.interactive-list [data-message-index="${index}"]`);
+      await expect(target).toBeVisible();
+      await expect(target).toBeInViewport({ ratio: 1 });
+      const offset = await target.evaluate(element =>
+        element.closest('.monaco-list-row').getBoundingClientRect().top -
+        element.closest('.interactive-list').getBoundingClientRect().top);
+      expect(Math.abs(offset)).toBeLessThan(1);
+    }
+  }
+  await expect.poll(() => page.evaluate(() => fixture.edits)).toBe(0);
+  await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
+});
+
+test('mouse and keyboard timeline jumps retain native behavior', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(90, { dynamicHeights: true, timeline: true }));
+  await page.getByRole('button', { name: 'Show prompts', exact: true }).hover();
+  await page.getByRole('button', { name: 'Prompt 54', exact: true }).click();
+  await expect(page.locator('.prompt-timeline-gutter-panel')).toBeVisible();
+  await expect(page.locator('.interactive-list [data-message-index="54"]')).toBeInViewport({ ratio: 1 });
+  await page.getByRole('button', { name: 'Prompt 0', exact: true }).press('Enter');
+  expect(await page.evaluate(() => fixture.timelineJumps)).toEqual([54, 0]);
+  await expect(page.locator('.interactive-list [data-message-index="0"]')).toBeInViewport({ ratio: 1 });
+});
+
+test('inactive dynamic transcript keeps its layout without exposing or focusing descendants', async ({ page }) => {
+  await page.evaluate(() => fixture.mountTranscript(60, { dynamicHeights: true }));
+  await page.locator('.interactive-list .rendered-markdown').first().evaluate(e => { e.style.visibility = 'visible'; });
+  await page.locator('.native-send').evaluate(e => { e.style.visibility = 'visible'; });
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).tap();
+  expect(await page.locator('.interactive-list').evaluate(e => e.clientHeight)).toBe(340);
+  await expect(page.locator('.interactive-list .rendered-markdown').first()).not.toBeVisible();
+  await expect(page.locator('.native-send')).not.toBeVisible();
+  expect(await page.locator('.native-send').evaluate(e => { e.focus(); return e === document.activeElement; })).toBe(false);
+});
+
 test('small transcript pans do not turn into prompt edits', async ({ page }) => {
   await page.evaluate(() => fixture.mountTranscript(40));
   const result = await panTranscript(page, 8);
