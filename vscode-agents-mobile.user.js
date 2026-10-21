@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.2
+// @version      0.3.3
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -98,7 +98,7 @@
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.titlebar { visibility: hidden; }
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.sessionspart,
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.sidebar,
-    html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.editor,
+    html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.editor:not(.modal-editor-part),
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.panel {
       position: fixed !important; top: var(--tm-agents-header) !important; left: 0 !important;
       width: 100vw !important; height: calc(var(--tm-agents-height, 100dvh) - var(--tm-agents-header)) !important;
@@ -107,13 +107,13 @@
     }
     html.tm-agents-mobile[data-tm-agents-view="chat"] .part.sessionspart,
     html.tm-agents-mobile[data-tm-agents-view="sessions"] .part.sidebar,
-    html.tm-agents-mobile[data-tm-agents-view="files"] .part.editor,
+    html.tm-agents-mobile[data-tm-agents-view="files"] .part.editor:not(.modal-editor-part),
     html.tm-agents-mobile[data-tm-agents-view="panel"] .part.panel {
       visibility: visible !important; pointer-events: auto !important; z-index: 100;
     }
     html.tm-agents-mobile:not([data-tm-agents-view="chat"]) .part.sessionspart,
     html.tm-agents-mobile:not([data-tm-agents-view="sessions"]) .part.sidebar,
-    html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor,
+    html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor:not(.modal-editor-part),
     html.tm-agents-mobile:not([data-tm-agents-view="panel"]) .part.panel {
       opacity: 0 !important; visibility: hidden !important; pointer-events: none !important;
     }
@@ -121,7 +121,7 @@
        descendants whose native styles explicitly make them visible. */
     html.tm-agents-mobile:not([data-tm-agents-view="chat"]) .part.sessionspart *,
     html.tm-agents-mobile:not([data-tm-agents-view="sessions"]) .part.sidebar *,
-    html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor *,
+    html.tm-agents-mobile:not([data-tm-agents-view="files"]) .part.editor:not(.modal-editor-part) *,
     html.tm-agents-mobile:not([data-tm-agents-view="panel"]) .part.panel * {
       visibility: hidden !important; pointer-events: none !important;
     }
@@ -132,7 +132,7 @@
     html.tm-agents-mobile .sessions-list-control > .monaco-list,
     html.tm-agents-mobile .sessions-list-control .monaco-scrollable-element,
     html.tm-agents-mobile .sessions-list-control .monaco-list-rows,
-    html.tm-agents-mobile .part.editor [role="tree"] .monaco-scrollable-element { width: 100% !important; }
+    html.tm-agents-mobile .part.editor:not(.modal-editor-part) [role="tree"] .monaco-scrollable-element { width: 100% !important; }
     html.tm-agents-mobile .sessions-list-control .session-title { font-size: 16px !important; }
     html.tm-agents-mobile .sessions-list-control .session-section-label { font-size: 15px !important; }
     html.tm-agents-mobile .sessions-list-control .session-details-row { font-size: 13px !important; }
@@ -154,6 +154,7 @@
     }
     .tm-agents-input:focus { outline: 1px solid var(--vscode-focusBorder, #168bce); outline-offset: -1px; }
     .tm-agents-input[hidden] { display: none; }
+    html.tm-agents-mobile .shadow-root-host,
     html.tm-agents-mobile .interactive-list .monaco-list-row,
     html.tm-agents-mobile .sessions-list-control .monaco-list-row {
       touch-action: var(--tm-agents-transcript-touch-action, pinch-zoom) !important;
@@ -517,7 +518,7 @@
         widthOverrides.delete(element);
       }
     }
-    for (const pane of document.querySelectorAll('.part.sidebar, .part.editor')) {
+    for (const pane of document.querySelectorAll('.part.sidebar, .part.editor:not(.modal-editor-part)')) {
       for (const target of pane.querySelectorAll('.sessions-list-control, [role="tree"], .part.auxiliarybar')) {
         let element = target;
         while (element && element !== pane) {
@@ -555,6 +556,9 @@
     if (element.getRootNode().host?.classList.contains('shadow-root-host')) {
       const item = element.closest('.monaco-menu .action-item');
       if (item) return { kind: 'menu', element: item };
+      const backdrop = element.closest('.context-view-block');
+      const menuToDismiss = backdrop?.parentElement.querySelector('.monaco-menu .actions-container');
+      if (menuToDismiss) return { kind: 'menu', element: backdrop, menuToDismiss };
     }
     const twistie = element.closest('.sessions-list-control .session-chat-twistie.collapsible, .sessions-list-control .session-section-chevron.collapsible');
     if (twistie) return { kind: 'chevron', element: twistie };
@@ -675,6 +679,7 @@
 
   on(window, 'pointerdown', event => {
     if (nativeEvents.has(event)) return;
+    lastGesture = undefined;
     if (nativeMomentum) { emitNativeTouch('touchstart'); nativeMomentum = false; }
     if (event.isPrimary !== false) submissionStates(eventElement(event)).forEach(state => { state.reviewRequired = false; });
     if (eventElement(event)?.closest('.tm-agents-nav button, .tm-agents-more button')) {
@@ -688,7 +693,6 @@
       return;
     }
     finishNativePan(true);
-    lastGesture = undefined;
     const link = chatLink(eventElement(event));
     if (link) { startNativePan(event, link); suppress(event); return; }
     const target = touchTarget(eventElement(event));
@@ -711,6 +715,7 @@
   }, { capture: true, passive: true });
   on(window, 'pointercancel', event => {
     if (gesture?.id === event.pointerId) {
+      gesture.moved = true;
       rememberGesture(gesture);
       gesture = undefined;
     }
@@ -727,7 +732,6 @@
     if (current.moved || performance.now() - current.started >= 450 ||
         (current.kind !== 'menu' && window.getSelection()?.toString())) return;
     if (!current.element.isConnected) return;
-    if (current.kind === 'menu') nativeMenuTap(current.element);
     if (current.kind === 'chevron') nativeClick(current.element);
     if (current.kind === 'request') {
       const row = current.element.closest('.interactive-request');
@@ -778,6 +782,20 @@
   on(window, 'click', event => {
     if (nativeEvents.has(event)) return;
     const target = eventElement(event);
+    if (lastGesture?.kind === 'menu' && performance.now() - lastGesture.ended < 900 &&
+        (event.pointerType === 'touch' || event.detail > 0)) {
+      const current = lastGesture;
+      lastGesture = undefined;
+      suppress(event, true);
+      // Keep the menu alive through touchend. Closing it in pointerup lets
+      // the browser's following click activate whatever was underneath it.
+      if (!current.moved && current.ended - current.started < 450 &&
+          current.element.isConnected && current.element.contains(target)) {
+        if (current.menuToDismiss) key(current.menuToDismiss, 'Escape', 'Escape', 27);
+        else nativeMenuTap(current.element);
+      }
+      return;
+    }
     const ownButton = target?.closest('.tm-agents-nav button, .tm-agents-more button');
     if (ownButton && buttonActions.has(ownButton)) {
       suppress(event, true);
@@ -837,7 +855,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.2 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.3 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
@@ -899,14 +917,14 @@
 
   function needsLayoutRefresh(records) {
     const hosts = '.interactive-input-editor, .sessions-chat-editor';
-    const structure = '.agent-sessions-workbench, .part.sidebar, .part.editor, .part.sessionspart, .part.panel, .interactive-input-editor, .sessions-chat-editor';
+    const structure = '.agent-sessions-workbench, .part.sidebar, .part.editor:not(.modal-editor-part), .part.sessionspart, .part.panel, .interactive-input-editor, .sessions-chat-editor';
     for (const record of records) {
       const parent = record.target.nodeType === 1 ? record.target : record.target.parentElement;
       for (const node of [...record.addedNodes, ...record.removedNodes]) {
         if (node.nodeType !== 1) continue;
         if (node.matches(structure) || node.querySelector(structure)) return true;
         if (node.matches('.monaco-editor') && (editors.has(node) || parent?.closest(hosts))) return true;
-        if (parent?.closest('.part.sidebar, .part.editor') &&
+        if (parent?.closest('.part.sidebar, .part.editor:not(.modal-editor-part)') &&
             (node.matches('.sessions-list-control, [role="tree"], .part.auxiliarybar') ||
              node.querySelector('.sessions-list-control, [role="tree"], .part.auxiliarybar'))) return true;
       }

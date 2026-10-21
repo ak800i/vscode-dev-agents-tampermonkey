@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.2: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.3: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -13,6 +13,17 @@ Main chat text and session titles use 16px text, the navigation and script
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.3 fixes menu click-through and dark, empty modal overlays. Menu
+selection now runs on the final click, after touchend, rather than removing
+the menu during pointerup and letting the browser click a control underneath.
+Tapping a menu backdrop dismisses it through the native cancel action.
+Shadow popup touch handling also keeps native menu drags running past the
+browser's pan threshold instead of stopping after the first movement.
+Workspace-pane hiding and width adjustments exclude modal editors, so dialogs
+such as Agent Customizations no longer disappear behind their own backdrop.
+Modal editors retain VS Code's native internal sizing, including its desktop
+minimum widths.
 
 Version 0.3.2 fixes touch selection in the Sessions host picker. Native menus
 inside Shadow DOM retarget touch events to their outer picker button, which
@@ -162,6 +173,12 @@ Dynamic-height transcript tests also cover history arriving while Chat is
 hidden, background remeasurement, and touch activation of the prompt timeline
 after switching panes. They check that the requested bubble is actually
 rendered at the top of the transcript, not just that a scroll offset changed.
+Host-picker tests use the real ContextMenuHandler and ContextViewService,
+including the native backdrop and disposal before the action runs. They check
+repeated host changes, backdrop removal, and that a touch does not open a
+session underneath. The earlier menu-only fixture never closed the menu and
+missed this lifecycle bug. Separate tests keep modal editors visible and
+usable from Sessions, Chat, and Files without stretching their internal trees.
 
 ```powershell
 npm ci

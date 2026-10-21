@@ -182,9 +182,18 @@ test('touch selects a host in a native shadow menu instead of reopening the pick
   await page.getByRole('button', { name: 'Change host', exact: true }).tap();
   await page.getByRole('menuitem', { name: 'Host 1', exact: true }).tap();
   await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+  await expect(page.locator('.context-view-block')).toHaveCount(0);
+  await expect(page.getByRole('menuitem')).toHaveCount(0);
+  await expect(page.locator('.agent-host-filter-label')).toHaveText('Host 1');
+  expect(await page.evaluate(() => fixture.openedSessions)).toBe(0);
   expect(await page.evaluate(() => fixture.hostMenuOpens)).toBe(1);
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
   await page.getByRole('menuitem', { name: 'Host 0', exact: true }).tap();
   await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1, 0]);
+  await expect(page.locator('.context-view-block')).toHaveCount(0);
+  expect(await page.evaluate(() => fixture.openedSessions)).toBe(0);
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
   await page.getByRole('menuitem', { name: 'Unavailable host', exact: true }).dispatchEvent('pointerdown', {
     pointerType: 'touch', pointerId: 42, isPrimary: true,
   });
@@ -195,6 +204,17 @@ test('touch selects a host in a native shadow menu instead of reopening the pick
   await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
 });
 
+test('tapping the native host menu backdrop dismisses it without reopening or selecting', async ({ page }) => {
+  await page.evaluate(() => fixture.mountHostPicker());
+  await page.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
+  await page.locator('.context-view-block').tap({ position: { x: 350, y: 420 } });
+  await expect(page.locator('.context-view-block')).toHaveCount(0);
+  await expect(page.getByRole('menuitem')).toHaveCount(0);
+  expect(await page.evaluate(() => fixture.hostSelections)).toEqual([]);
+  expect(await page.evaluate(() => fixture.hostMenuOpens)).toBe(1);
+});
+
 test('host menu mouse and keyboard selection stay native', async ({ page }) => {
   await page.evaluate(() => fixture.mountHostPicker());
   await page.getByRole('button', { name: 'Sessions', exact: true }).click();
@@ -203,6 +223,8 @@ test('host menu mouse and keyboard selection stay native', async ({ page }) => {
   await page.waitForTimeout(150);
   await page.getByRole('menuitem', { name: 'Host 1', exact: true }).click();
   await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+  await expect(page.locator('.context-view-block')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Change host', exact: true }).click();
   await page.keyboard.press('Home');
   await page.keyboard.press('Enter');
   await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1, 0]);
@@ -234,6 +256,7 @@ test('dragging or cancelling a host menu touch never selects a PC', async ({ pag
     emit('pointerdown', 210);
     emit('pointercancel', 210);
     emit('pointerup', 210);
+    element.dispatchEvent(new MouseEvent('click', { composed: true, bubbles: true, cancelable: true, detail: 1 }));
     const menu = element.closest('.monaco-menu');
     emit('pointerdown', 210);
     for (let y = 190; y >= 70; y -= 20) {
@@ -247,6 +270,34 @@ test('dragging or cancelling a host menu touch never selects a PC', async ({ pag
   expect(result.scrollTop).toBeGreaterThan(60);
   await page.getByRole('menuitem', { name: 'Host 12', exact: true }).tap();
   await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([12]);
+});
+
+test('real touch swipes in a host menu scroll without selecting or clicking through', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Trusted touch movement uses Chromium CDP.');
+  await page.evaluate(() => fixture.mountHostPicker(60));
+  await page.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
+  const point = await page.getByRole('menuitem', { name: 'Host 8', exact: true }).evaluate(e => {
+    const r = e.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 0, ...point }] });
+    for (let i = 1; i <= 5; i++) {
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove', touchPoints: [{ id: 0, x: point.x, y: point.y - i * 28 }],
+      });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect.poll(() => page.locator('.monaco-menu').evaluate(e => e.scrollTop)).toBeGreaterThan(90);
+    expect(await page.evaluate(() => fixture.hostSelections)).toEqual([]);
+    expect(await page.evaluate(() => fixture.openedSessions)).toBe(0);
+    await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+  } finally {
+    await cdp.detach();
+  }
 });
 
 test('a gesture cancelled while scrolling does not collapse or edit anything', async ({ page }) => {
@@ -480,6 +531,21 @@ test('a hidden composer is resynchronized when returning to Chat', async ({ page
   await nav.getByRole('button', { name: 'Chat', exact: true }).click();
   await expect(page.locator('.tm-agents-input')).toHaveValue('Changed while hidden');
   await expect(page.locator('.tm-agents-status')).toHaveText('');
+});
+
+test('modal editors stay visible and usable independently of the selected workspace pane', async ({ page }) => {
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  for (const pane of ['Sessions', 'Chat', 'Files']) {
+    await nav.getByRole('button', { name: pane, exact: true }).tap();
+    await page.evaluate(() => fixture.openModalEditor());
+    const dialog = page.getByRole('dialog', { name: 'Agent Customizations', exact: true });
+    await expect(dialog).toBeVisible();
+    expect(await dialog.evaluate(e => getComputedStyle(e).position)).toBe('relative');
+    await expect(dialog.getByRole('button', { name: 'Customize agents', exact: true })).toBeVisible();
+    await expect.poll(() => dialog.getByRole('tree').evaluate(e => e.getBoundingClientRect().width)).toBe(120);
+    await dialog.getByRole('button', { name: 'Close dialog', exact: true }).tap();
+    await expect(page.locator('.monaco-modal-editor-block')).toHaveCount(0);
+  }
 });
 
 test('a late-loaded phone renderer requests a reload in normal browser mode', async ({ page }) => {

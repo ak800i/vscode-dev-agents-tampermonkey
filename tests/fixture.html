@@ -24,6 +24,14 @@
       overflow: auto; background: white; border: 1px solid;
     }
     .prompt-timeline-gutter-row-jump { display: block; width: 100%; min-height: 44px; }
+    .monaco-modal-editor-block { position: fixed; inset: 0; z-index: 2540; background: rgba(0, 0, 0, .5); }
+    .modal-editor-resizable { position: absolute; left: 15px; top: 90px; width: 360px; height: 460px; }
+    .modal-editor-shadow { width: 100%; height: 100%; overflow: hidden; }
+    .monaco-modal-editor-block .modal-editor-part {
+      position: relative; display: grid; grid-template-rows: auto 1fr; width: 100%; height: 100%; background: white;
+    }
+    .modal-editor-header { display: flex; justify-content: space-between; }
+    .modal-editor-part .content { min-width: 0; }
     [role="dialog"] { position: fixed; z-index: 2500; top: 50px; left: 8px; background: white; padding: 12px; border: 1px solid; }
   </style>
   <link rel="stylesheet" href="/fixture-runtime.css">
@@ -86,7 +94,7 @@
   <script>
     const initialLayout = navigator.userAgent.includes('Mobi') && innerWidth < 640 ? 'phone' : 'desktop';
     document.querySelector('.monaco-workbench').classList.toggle('phone-layout', initialLayout === 'phone');
-    window.initializeFixtureRuntime = (monaco, List, Gesture, Menu, Action) => {
+    window.initializeFixtureRuntime = (monaco, List, Gesture, Action, ContextMenuHandler, ContextViewService) => {
       const editorHost = document.querySelector('.interactive-input-editor');
       const editor = monaco.editor.create(editorHost, {
         value: '',
@@ -226,46 +234,65 @@
         });
       };
       fixture.mountHostPicker = (count = 2) => {
+        const workbench = document.querySelector('.monaco-workbench');
+        const contextViewService = new ContextViewService({
+          mainContainer: workbench,
+          activeContainer: workbench,
+          getContainer: () => workbench,
+          onDidLayoutContainer: listener => {
+            window.addEventListener('resize', listener);
+            return { dispose: () => window.removeEventListener('resize', listener) };
+          },
+        });
+        const contextMenuHandler = new ContextMenuHandler(
+          contextViewService, { publicLog2() {} },
+          { error: error => { throw error; } }, { lookupKeybinding: () => undefined });
         const picker = document.createElement('a');
         picker.className = 'agent-host-filter-button';
         picker.setAttribute('role', 'button');
         picker.setAttribute('aria-label', 'Change host');
         picker.tabIndex = 0;
-        picker.textContent = 'Host 0';
+        picker.style.cssText = 'display:block;min-height:44px';
+        const label = document.createElement('span');
+        label.className = 'agent-host-filter-label';
+        label.textContent = 'Host 0';
+        picker.append(label);
         document.querySelector('.part.sidebar').prepend(picker);
         fixture.hostSelections = [];
         fixture.hostMenuOpens = 0;
-        let menu;
-        let shadowHost;
+        fixture.hostMenuCloses = 0;
         const open = () => {
           fixture.hostMenuOpens++;
-          menu?.dispose();
-          shadowHost?.remove();
-          shadowHost = document.createElement('div');
-          shadowHost.className = 'shadow-root-host';
-          picker.append(shadowHost);
-          const shadow = shadowHost.attachShadow({ mode: 'open' });
-          const css = document.createElement('link');
-          css.rel = 'stylesheet';
-          css.href = '/fixture-runtime.css';
-          shadow.append(css);
-          const container = document.createElement('div');
-          container.style.cssText = 'position:fixed;top:110px;left:12px;width:280px;z-index:3000;background:white';
-          shadow.append(container);
           const actions = Array.from({ length: count }, (_, index) => new Action(
             `agentHostFilter.host.${index}`, `Host ${index}`, '', true, async () => {
               fixture.hostSelections.push(index);
-              picker.firstChild.textContent = `Host ${index}`;
+              label.textContent = `Host ${index}`;
             }));
           actions.push(new Action('disabled-host', 'Unavailable host', '', false, async () => {
             fixture.hostSelections.push('disabled');
           }));
-          menu = new Menu(container, actions, {}, {});
-          menu.focus();
+          contextMenuHandler.showContextMenu({
+            getAnchor: () => picker,
+            getActions: () => actions,
+            domForShadowRoot: picker,
+            onHide: () => fixture.hostMenuCloses++,
+          });
         };
         Gesture.addTarget(picker);
         picker.addEventListener('click', open);
         picker.addEventListener('-monaco-gesturetap', open);
+        fixture.openHostMenu = open;
+      };
+      fixture.openModalEditor = () => {
+        const block = document.createElement('div');
+        block.className = 'monaco-modal-editor-block';
+        block.innerHTML = '<div class="modal-editor-resizable"><div class="modal-editor-shadow">' +
+          '<div class="part editor modal-editor-part" role="dialog" aria-label="Agent Customizations">' +
+          '<div class="modal-editor-header"><span>Agent Customizations</span><button>Close dialog</button></div>' +
+          '<div class="content"><div role="tree" aria-label="Customization navigation" style="width:120px">Overview</div>' +
+          '<button>Customize agents</button></div></div></div></div>';
+        block.querySelector('.modal-editor-header button').addEventListener('click', () => block.remove());
+        document.querySelector('.monaco-workbench').append(block);
       };
       // The installed app does not export Monaco's API; exercise the DOM bridge.
       window.monaco = undefined;
