@@ -230,6 +230,76 @@ test('host menu mouse and keyboard selection stay native', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1, 0]);
 });
 
+test('persistent connection toasts leave the footer host picker reachable', async ({ page }) => {
+  await page.evaluate(() => {
+    fixture.mountHostPicker(2, { footer: true });
+    fixture.showConnectionToasts();
+  });
+  await page.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  const picker = page.getByRole('button', { name: 'Change host', exact: true });
+  expect(await picker.evaluate(element => {
+    const r = element.getBoundingClientRect();
+    return element.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2));
+  })).toBe(true);
+  await expect(page.getByRole('status').filter({ hasText: 'unavailable-host-0' })).toBeVisible();
+  await picker.tap();
+  await page.getByRole('menuitem', { name: 'Host 1', exact: true }).tap();
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+  await expect(page.locator('.context-view-block')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Connection details 0', exact: true }).tap();
+  expect(await page.evaluate(() => fixture.notificationActions)).toBe(1);
+  await expect(page.getByRole('status').filter({ hasText: 'unavailable-host-0' })).toBeVisible();
+});
+
+test('stacked toasts stay between the navigation and host footer on small viewports', async ({ page }) => {
+  for (const height of [644, 844]) {
+    await page.setViewportSize({ width: 390, height });
+    await page.evaluate(() => {
+      fixture.mountHostPicker(2, { footer: true });
+      fixture.showConnectionToasts(12, 'top-right');
+    });
+    await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).tap();
+    const metrics = await page.locator('.notifications-toasts').evaluate(element => {
+      const r = element.getBoundingClientRect();
+      const picker = document.querySelector('.agent-host-filter-button');
+      const p = picker.getBoundingClientRect();
+      return {
+        top: r.top, bottom: r.bottom, pickerTop: p.top,
+        scrollable: element.scrollHeight > element.clientHeight,
+        hit: picker.contains(document.elementFromPoint(p.x + p.width / 2, p.y + p.height / 2)),
+      };
+    });
+    expect(metrics.top).toBeGreaterThanOrEqual(44);
+    expect(metrics.bottom).toBeLessThanOrEqual(metrics.pickerTop - 4);
+    expect(metrics.scrollable).toBe(true);
+    expect(metrics.hit).toBe(true);
+    await page.getByRole('button', { name: 'Connection details 11', exact: true }).tap();
+    expect(await page.evaluate(() => fixture.notificationActions)).toBe(1);
+    await page.getByRole('button', { name: 'Change host', exact: true }).tap();
+    await page.getByRole('menuitem', { name: 'Host 1', exact: true }).tap();
+    await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+    await page.evaluate(() => {
+      document.querySelector('.notifications-toasts').remove();
+      document.querySelector('.agent-host-filter-button').remove();
+    });
+  }
+});
+
+test('toast recovery placement is limited to Sessions and is removed on disposal', async ({ page }) => {
+  await page.evaluate(() => fixture.showConnectionToasts());
+  const toasts = page.locator('.notifications-toasts');
+  expect(await toasts.evaluate(e => getComputedStyle(e).bottom)).toBe('4px');
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  await nav.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  expect(parseFloat(await toasts.evaluate(e => getComputedStyle(e).bottom))).toBeGreaterThanOrEqual(56);
+  await nav.getByRole('button', { name: 'Chat', exact: true }).tap();
+  expect(await toasts.evaluate(e => getComputedStyle(e).bottom)).toBe('4px');
+  await nav.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.evaluate(() => window.__vscodeAgentsMobile.dispose());
+  expect(await toasts.evaluate(e => getComputedStyle(e).bottom)).toBe('4px');
+  await expect(page.getByRole('button', { name: 'Connection details 0', exact: true })).toBeVisible();
+});
+
 test('selected page text does not block a host menu tap', async ({ page }) => {
   await page.evaluate(() => fixture.mountHostPicker());
   await page.getByRole('button', { name: 'Sessions', exact: true }).tap();

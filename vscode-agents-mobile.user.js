@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.3
+// @version      0.3.4
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -95,6 +95,16 @@
       padding: 6px; background: var(--vscode-menu-background, #222); border: 1px solid #666;
     }
     .tm-agents-more button { text-align: left; }
+    html.tm-agents-mobile[data-tm-agents-view="sessions"] .monaco-workbench > .notifications-toasts {
+      position: fixed !important; top: auto !important;
+      bottom: max(56px, calc(100dvh - var(--tm-agents-height, 100dvh) + 56px)) !important;
+      max-height: calc(var(--tm-agents-height, 100dvh) - var(--tm-agents-header) - 72px);
+      max-width: calc(100vw - 8px); overflow-y: auto;
+    }
+    html.tm-agents-mobile[data-tm-agents-view="sessions"] .monaco-workbench.context-menu-visible > .notifications-toasts {
+      /* The shadow menu is inside the active pane's stacking context. */
+      z-index: 99 !important;
+    }
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.titlebar { visibility: hidden; }
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.sessionspart,
     html.tm-agents-mobile .agent-sessions-workbench:not(.phone-layout) .part.sidebar,
@@ -855,7 +865,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.3 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.4 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }

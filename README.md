@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.3: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.4: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -13,6 +13,14 @@ Main chat text and session titles use 16px text, the navigation and script
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.4 keeps persistent connection toasts above the Sessions host footer,
+so a failed tunnel attempt cannot block the dropdown needed to select another
+PC. Toast stacks are bounded and scrollable between the navigation and footer.
+While a native context menu is open, its pane takes priority over toasts;
+notification messages and actions return to their normal layer on dismissal.
+No notification is dismissed, suppressed, or marked successful by the script.
+The placement change applies only to Sessions; Chat keeps its native placement.
 
 Version 0.3.3 fixes menu click-through and dark, empty modal overlays. Menu
 selection now runs on the final click, after touchend, rather than removing
@@ -179,6 +187,18 @@ repeated host changes, backdrop removal, and that a touch does not open a
 session underneath. The earlier menu-only fixture never closed the menu and
 missed this lifecycle bug. Separate tests keep modal editors visible and
 usable from Sessions, Chat, and Files without stretching their internal trees.
+Toast regressions check actual footer hit-testing and host selection while a
+persistent message remains, notification actions after selection, long stacks
+at two viewport heights, top-right settings, and restoration on pane change
+or script disposal.
+
+The toast recovery path was also checked in Firefox 158 on the existing
+Android 14 `zoran` VM with Tampermonkey. A controlled, explicitly labeled
+persistent connection toast reproduced the obstruction without disconnecting
+a working tunnel. Android input taps then selected the alternate host and
+returned to the original host while the test toast remained; its details
+button stayed operable. This is real Firefox Android on an emulator, not a
+physical handset or a test of a real tunnel outage.
 
 ```powershell
 npm ci

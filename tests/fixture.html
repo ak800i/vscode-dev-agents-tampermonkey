@@ -32,6 +32,12 @@
     }
     .modal-editor-header { display: flex; justify-content: space-between; }
     .modal-editor-part .content { min-width: 0; }
+    .monaco-workbench > .notifications-toasts {
+      position: fixed; right: 4px; bottom: 4px; z-index: 2545; display: flex; flex-direction: column;
+    }
+    .monaco-workbench > .notifications-toasts.top-right { top: 40px !important; bottom: auto; }
+    .notification-toast { box-sizing: border-box; width: 374px; margin: 4px; padding: 10px; background: #303030; color: white; }
+    .notification-toast button { min-height: 32px; }
     [role="dialog"] { position: fixed; z-index: 2500; top: 50px; left: 8px; background: white; padding: 12px; border: 1px solid; }
   </style>
   <link rel="stylesheet" href="/fixture-runtime.css">
@@ -233,7 +239,7 @@
           minimap: { enabled: false }, editContext: false,
         });
       };
-      fixture.mountHostPicker = (count = 2) => {
+      fixture.mountHostPicker = (count = 2, { footer = false } = {}) => {
         const workbench = document.querySelector('.monaco-workbench');
         const contextViewService = new ContextViewService({
           mainContainer: workbench,
@@ -253,6 +259,7 @@
         picker.setAttribute('aria-label', 'Change host');
         picker.tabIndex = 0;
         picker.style.cssText = 'display:block;min-height:44px';
+        if (footer) picker.style.cssText += ';position:absolute;bottom:4px;left:8px;right:8px';
         const label = document.createElement('span');
         label.className = 'agent-host-filter-label';
         label.textContent = 'Host 0';
@@ -275,13 +282,31 @@
             getAnchor: () => picker,
             getActions: () => actions,
             domForShadowRoot: picker,
-            onHide: () => fixture.hostMenuCloses++,
+            onHide: () => {
+              fixture.hostMenuCloses++;
+              workbench.classList.remove('context-menu-visible');
+            },
           });
+          workbench.classList.add('context-menu-visible');
         };
         Gesture.addTarget(picker);
         picker.addEventListener('click', open);
         picker.addEventListener('-monaco-gesturetap', open);
         fixture.openHostMenu = open;
+      };
+      fixture.showConnectionToasts = (count = 1, position = '') => {
+        const toasts = document.createElement('div');
+        toasts.className = `notifications-toasts visible ${position}`;
+        fixture.notificationActions = 0;
+        for (let index = 0; index < count; index++) {
+          const toast = document.createElement('div');
+          toast.className = 'notification-toast-container';
+          toast.innerHTML = '<div class="notification-toast notification-fade-in-done" role="status">' +
+            `<span>Connecting to tunnel 'unavailable-host-${index}'...</span><button>Connection details ${index}</button></div>`;
+          toast.querySelector('button').addEventListener('click', () => fixture.notificationActions++);
+          toasts.append(toast);
+        }
+        document.querySelector('.monaco-workbench').append(toasts);
       };
       fixture.openModalEditor = () => {
         const block = document.createElement('div');
