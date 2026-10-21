@@ -581,6 +581,84 @@ test('navigation exposes sessions, chat, and files without losing a draft', asyn
   await expect(page.locator('.tm-agents-input')).toHaveValue('Retain across tabs');
 });
 
+test('native session and child-chat taps reveal the conversation without a compatibility click', async ({ page }) => {
+  await page.evaluate(() => fixture.mountSessionTree());
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  for (const name of ['Session Alpha', 'Chat Beta', 'Session Alpha', 'Session Alpha']) {
+    await nav.getByRole('button', { name: 'Sessions', exact: true }).tap();
+    await page.getByRole('treeitem', { name, exact: true }).locator('.session-title,.session-chat-title').tap();
+    await expect.poll(() => page.evaluate(() => fixture.sessionOpens.at(-1))).toBe(name);
+    await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'chat');
+    await expect(page.getByText(`Conversation for ${name}`, { exact: true })).toBeVisible();
+  }
+  expect(await page.evaluate(() => fixture.sessionOpens)).toEqual(['Session Alpha', 'Chat Beta', 'Session Alpha', 'Session Alpha']);
+  expect(await page.evaluate(() => fixture.sends)).toEqual([]);
+});
+
+test('session row actions and group expansion do not navigate to Chat', async ({ page }) => {
+  await page.evaluate(() => fixture.mountSessionTree());
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.getByRole('treeitem', { name: 'Session Alpha', exact: true }).getByRole('button', { name: 'Row action' }).click();
+  expect(await page.evaluate(() => fixture.sessionActions)).toBe(1);
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+  await page.getByRole('treeitem', { name: 'Session Alpha', exact: true }).getByRole('button', { name: 'Row action' }).tap();
+  expect(await page.evaluate(() => fixture.sessionActions)).toBe(2);
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+  await page.getByRole('treeitem', { name: 'Workspace group', exact: true }).locator('.session-title').tap();
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+  await expect(page.getByRole('treeitem', { name: 'Workspace group', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  await page.getByRole('treeitem', { name: 'Workspace group', exact: true }).locator('.session-title').tap();
+  await page.getByRole('treeitem', { name: 'Session Alpha', exact: true }).locator('.monaco-tl-twistie').tap();
+  await expect(page.getByRole('treeitem', { name: 'Session Alpha', exact: true })).toHaveAttribute('aria-expanded', 'false');
+  expect(await page.evaluate(() => fixture.sessionOpens)).toEqual([]);
+});
+
+test('mouse and keyboard session activation reveal Chat without replaying the native open', async ({ page }) => {
+  await page.evaluate(() => fixture.mountSessionTree());
+  const nav = page.getByRole('navigation', { name: 'Mobile workspace' });
+  await nav.getByRole('button', { name: 'Sessions', exact: true }).click();
+  await page.getByRole('treeitem', { name: 'Session Alpha', exact: true }).locator('.session-title').click();
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'chat');
+  await expect(page.getByText('Conversation for Session Alpha', { exact: true })).toBeVisible();
+  await nav.getByRole('button', { name: 'Sessions', exact: true }).click();
+  await page.evaluate(() => {
+    fixture.sessionTree.setFocus([fixture.sessionTree.getSelection()[0]]);
+    fixture.sessionTree.domFocus();
+  });
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => fixture.sessionOpens.at(-1))).toBe('Chat Beta');
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'chat');
+  await expect(page.getByText('Conversation for Chat Beta', { exact: true })).toBeVisible();
+  expect(await page.evaluate(() => fixture.sessionOpens)).toEqual(['Session Alpha', 'Chat Beta']);
+});
+
+test('scrolling the native Sessions tree does not open a session or switch to Chat', async ({ page, browserName }) => {
+  test.skip(browserName !== 'chromium', 'Trusted touch movement uses Chromium CDP.');
+  await page.evaluate(() => fixture.mountSessionTree());
+  await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).tap();
+  const point = await page.getByRole('treeitem', { name: 'Session 1', exact: true }).locator('.session-title').evaluate(e => {
+    const r = e.getBoundingClientRect();
+    return { x: r.x + 60, y: r.y + r.height / 2 };
+  });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ id: 0, ...point }] });
+    for (let i = 1; i <= 5; i++) {
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove', touchPoints: [{ id: 0, x: point.x, y: point.y - i * 28 }],
+      });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect.poll(() => page.evaluate(() => fixture.sessionTree.scrollTop)).toBeGreaterThan(90);
+    expect(await page.evaluate(() => fixture.sessionOpens)).toEqual([]);
+    await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+  } finally {
+    await cdp.detach();
+  }
+});
+
 test('native session list wrappers fill the phone width', async ({ page }) => {
   await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'Sessions', exact: true }).click();
   await expect.poll(() => page.getByRole('tree', { name: 'Sessions' }).evaluate(e => e.getBoundingClientRect().width)).toBeGreaterThanOrEqual(366);

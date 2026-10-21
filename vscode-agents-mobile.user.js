@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.4
+// @version      0.3.5
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -56,6 +56,7 @@
   let gesture;
   let lastGesture;
   let compatibilityClickTimer;
+  let sessionOpenFrame = 0;
   let nativePan;
   let nativeMomentum = false;
   const blockedTouches = new Set();
@@ -561,6 +562,28 @@
     return target?.nodeType === 1 && typeof target.closest === 'function' ? target : target?.parentElement;
   }
 
+  function revealActivatedSession(event) {
+    if (view !== 'sessions') return;
+    let target = eventElement(event);
+    if (target?.closest(`${interactiveSelector}, .session-title-toolbar, .session-inline-rename-input, .monaco-tl-twistie`)) return;
+    if (event.type === 'keydown') {
+      const list = target?.closest('.sessions-list-control .monaco-list');
+      const focusedId = list?.getAttribute('aria-activedescendant');
+      if (!focusedId) return;
+      target = document.getElementById(focusedId)?.querySelector('.session-item, .session-chat-item');
+    }
+    const item = target?.closest('.sessions-list-control .session-item, .sessions-list-control .session-chat-item');
+    if (!item) return;
+    const row = item.closest('.monaco-list-row, [role="treeitem"]');
+    cancelAnimationFrame(sessionOpenFrame);
+    // The native tree opens from gesture taps as well as clicks. Let it finish
+    // selecting/opening; only reveal Chat, never replay the native activation.
+    sessionOpenFrame = requestAnimationFrame(() => {
+      sessionOpenFrame = 0;
+      if (!disposed && view === 'sessions' && row?.getAttribute('aria-selected') === 'true') setView('chat');
+    });
+  }
+
   function touchTarget(element) {
     if (!element) return;
     if (element.getRootNode().host?.classList.contains('shadow-root-host')) {
@@ -779,6 +802,7 @@
       if (type === '-monaco-gesturetap' && guardSubmission(event)) return;
       const element = eventElement(event);
       if ((nativePan && element && nativePan.scroller.isSameNode(element)) || touchTarget(element) || chatLink(element)) suppress(event, true);
+      else if (type === '-monaco-gesturetap') revealActivatedSession(event);
     }, { capture: true });
   }
   on(window, 'contextmenu', event => {
@@ -829,9 +853,7 @@
       return;
     }
     if (guardSubmission(event)) return;
-    if (view === 'sessions' && target?.closest('.sessions-list-control .session-item')) {
-      requestAnimationFrame(() => setView('chat'));
-    }
+    if (event.button === 0) revealActivatedSession(event);
   }, { capture: true });
   for (const type of ['keydown', 'keyup', 'keypress']) {
     on(window, type, event => {
@@ -845,6 +867,8 @@
         suppress(event);
       } else if (event.key === 'Enter' && target?.closest('.interactive-input-editor, .sessions-chat-editor')) {
         suppress(event);
+      } else if (type === 'keydown' && event.key === 'Enter') {
+        revealActivatedSession(event);
       }
     }, { capture: true });
   }
@@ -865,7 +889,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.4 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.5 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
@@ -959,6 +983,7 @@
       observer.disconnect();
       workbenchObserver.disconnect();
       cancelAnimationFrame(frame);
+      cancelAnimationFrame(sessionOpenFrame);
       clearTimeout(compatibilityClickTimer);
       blockedTouches.clear();
       for (const state of editors.values()) {

@@ -100,7 +100,7 @@
   <script>
     const initialLayout = navigator.userAgent.includes('Mobi') && innerWidth < 640 ? 'phone' : 'desktop';
     document.querySelector('.monaco-workbench').classList.toggle('phone-layout', initialLayout === 'phone');
-    window.initializeFixtureRuntime = (monaco, List, Gesture, Action, ContextMenuHandler, ContextViewService) => {
+    window.initializeFixtureRuntime = (monaco, List, Gesture, Action, ContextMenuHandler, ContextViewService, ObjectTree) => {
       const editorHost = document.querySelector('.interactive-input-editor');
       const editor = monaco.editor.create(editorHost, {
         value: '',
@@ -318,6 +318,76 @@
           '<button>Customize agents</button></div></div></div></div>';
         block.querySelector('.modal-editor-header button').addEventListener('click', () => block.remove());
         document.querySelector('.monaco-workbench').append(block);
+      };
+      fixture.mountSessionTree = () => {
+        const host = document.querySelector('.sessions-list-control');
+        host.replaceChildren();
+        host.style.height = '360px';
+        fixture.sessionOpens = [];
+        fixture.sessionActions = 0;
+        const renderer = {
+          templateId: 'session',
+          renderTemplate(container) {
+            const item = document.createElement('div');
+            const title = document.createElement('span');
+            const toolbar = document.createElement('div');
+            toolbar.className = 'session-title-toolbar';
+            const action = document.createElement('button');
+            action.textContent = 'Row action';
+            toolbar.append(action);
+            item.append(title, toolbar);
+            container.append(item);
+            Gesture.ignoreTarget(toolbar);
+            for (const type of ['pointerdown', 'pointerup', 'click']) {
+              toolbar.addEventListener(type, event => event.stopPropagation());
+            }
+            action.addEventListener('click', () => fixture.sessionActions++);
+            return { item, title, toolbar };
+          },
+          renderElement(node, index, template) {
+            const element = node.element;
+            template.item.className = element.kind === 'chat' ? 'session-chat-item'
+              : element.kind === 'section' ? 'session-list-section-row' : 'session-item';
+            template.title.className = element.kind === 'chat' ? 'session-chat-title' : 'session-title';
+            template.title.textContent = element.title;
+            template.toolbar.hidden = element.kind === 'section';
+          },
+          disposeTemplate() {},
+        };
+        const tree = new ObjectTree('session-navigation-fixture', host, {
+          getHeight: () => 64, getTemplateId: () => 'session',
+        }, [renderer], {
+          accessibilityProvider: {
+            getAriaLabel: item => item.title,
+            getWidgetAriaLabel: () => 'Session navigation',
+          },
+          expandOnlyOnTwistieClick: item => item.kind === 'session',
+          twistieAdditionalCssClass: item => item.kind === 'session' ? 'session-chat-twistie' : '',
+          multipleSelectionSupport: false,
+          keyboardNavigationLabelProvider: { getKeyboardNavigationLabel: item => item.title },
+        });
+        const parent = { title: 'Session Alpha', kind: 'session' };
+        const child = { title: 'Chat Beta', kind: 'chat' };
+        tree.setChildren(null, [{
+          element: { title: 'Workspace group', kind: 'section' }, collapsed: false, children: [{
+            element: parent, collapsed: false, children: [{ element: child }],
+          }, ...Array.from({ length: 30 }, (_, index) => ({
+            element: { title: `Session ${index}`, kind: 'session' },
+          }))],
+        }]);
+        tree.layout(360, host.clientWidth);
+        const opened = element => {
+          if (!element || element.kind === 'section') return;
+          fixture.sessionOpens.push(element.title);
+          document.querySelector('.interactive-response p').textContent = `Conversation for ${element.title}`;
+        };
+        tree.onPointer(event => {
+          if (!event.browserEvent.target?.closest?.('.monaco-tl-twistie')) opened(event.element);
+        });
+        tree.onDidChangeSelection(event => {
+          if (event.browserEvent?.key === 'Enter' && event.elements.length === 1) opened(event.elements[0]);
+        });
+        fixture.sessionTree = tree;
       };
       // The installed app does not export Monaco's API; exercise the DOM bridge.
       window.monaco = undefined;

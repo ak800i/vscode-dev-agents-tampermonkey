@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.4: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.5: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -13,6 +13,14 @@ Main chat text and session titles use 16px text, the navigation and script
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.5 reveals Chat after native session or child-chat activation by
+touch, mouse, or keyboard Enter. Firefox Android's native tree handles taps
+through Monaco gesture events and can suppress the ordinary click; older
+versions left the newly opened conversation hidden behind Sessions. Navigation
+now waits for native row selection and reveals Chat without replaying the
+session open. Row actions, inline rename, collapse controls, group headers,
+and scrolling stay on Sessions.
 
 Version 0.3.4 keeps persistent connection toasts above the Sessions host footer,
 so a failed tunnel attempt cannot block the dropdown needed to select another
@@ -191,6 +199,11 @@ Toast regressions check actual footer hit-testing and host selection while a
 persistent message remains, notification actions after selection, long stacks
 at two viewport heights, top-right settings, and restoration on pane change
 or script disposal.
+Session-navigation tests use a real Monaco ObjectTree for native gesture taps,
+selection, mouse activation, keyboard Enter, hierarchy expansion, and trusted
+touch scrolling. They assert that the chosen conversation becomes visible and
+that native activation runs only once, including reopening an already-selected
+session and child-chat rows.
 
 The toast recovery path was also checked in Firefox 158 on the existing
 Android 14 `zoran` VM with Tampermonkey. A controlled, explicitly labeled
