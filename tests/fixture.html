@@ -86,7 +86,7 @@
   <script>
     const initialLayout = navigator.userAgent.includes('Mobi') && innerWidth < 640 ? 'phone' : 'desktop';
     document.querySelector('.monaco-workbench').classList.toggle('phone-layout', initialLayout === 'phone');
-    window.initializeFixtureRuntime = (monaco, List, Gesture) => {
+    window.initializeFixtureRuntime = (monaco, List, Gesture, Menu, Action) => {
       const editorHost = document.querySelector('.interactive-input-editor');
       const editor = monaco.editor.create(editorHost, {
         value: '',
@@ -224,6 +224,48 @@
           value: 'Earlier prompt', language: 'plaintext', automaticLayout: true,
           minimap: { enabled: false }, editContext: false,
         });
+      };
+      fixture.mountHostPicker = (count = 2) => {
+        const picker = document.createElement('a');
+        picker.className = 'agent-host-filter-button';
+        picker.setAttribute('role', 'button');
+        picker.setAttribute('aria-label', 'Change host');
+        picker.tabIndex = 0;
+        picker.textContent = 'Host 0';
+        document.querySelector('.part.sidebar').prepend(picker);
+        fixture.hostSelections = [];
+        fixture.hostMenuOpens = 0;
+        let menu;
+        let shadowHost;
+        const open = () => {
+          fixture.hostMenuOpens++;
+          menu?.dispose();
+          shadowHost?.remove();
+          shadowHost = document.createElement('div');
+          shadowHost.className = 'shadow-root-host';
+          picker.append(shadowHost);
+          const shadow = shadowHost.attachShadow({ mode: 'open' });
+          const css = document.createElement('link');
+          css.rel = 'stylesheet';
+          css.href = '/fixture-runtime.css';
+          shadow.append(css);
+          const container = document.createElement('div');
+          container.style.cssText = 'position:fixed;top:110px;left:12px;width:280px;z-index:3000;background:white';
+          shadow.append(container);
+          const actions = Array.from({ length: count }, (_, index) => new Action(
+            `agentHostFilter.host.${index}`, `Host ${index}`, '', true, async () => {
+              fixture.hostSelections.push(index);
+              picker.firstChild.textContent = `Host ${index}`;
+            }));
+          actions.push(new Action('disabled-host', 'Unavailable host', '', false, async () => {
+            fixture.hostSelections.push('disabled');
+          }));
+          menu = new Menu(container, actions, {}, {});
+          menu.focus();
+        };
+        Gesture.addTarget(picker);
+        picker.addEventListener('click', open);
+        picker.addEventListener('-monaco-gesturetap', open);
       };
       // The installed app does not export Monaco's API; exercise the DOM bridge.
       window.monaco = undefined;

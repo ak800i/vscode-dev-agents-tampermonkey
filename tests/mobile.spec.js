@@ -176,6 +176,79 @@ test('touching the parent chevron toggles only once and does not open a session'
   await expect.poll(() => page.evaluate(() => fixture.openedSessions)).toBe(0);
 });
 
+test('touch selects a host in a native shadow menu instead of reopening the picker', async ({ page }) => {
+  await page.evaluate(() => fixture.mountHostPicker());
+  await page.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
+  await page.getByRole('menuitem', { name: 'Host 1', exact: true }).tap();
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+  expect(await page.evaluate(() => fixture.hostMenuOpens)).toBe(1);
+  await page.getByRole('menuitem', { name: 'Host 0', exact: true }).tap();
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1, 0]);
+  await page.getByRole('menuitem', { name: 'Unavailable host', exact: true }).dispatchEvent('pointerdown', {
+    pointerType: 'touch', pointerId: 42, isPrimary: true,
+  });
+  await page.getByRole('menuitem', { name: 'Unavailable host', exact: true }).dispatchEvent('pointerup', {
+    pointerType: 'touch', pointerId: 42, isPrimary: true,
+  });
+  expect(await page.evaluate(() => fixture.hostSelections)).toEqual([1, 0]);
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'sessions');
+});
+
+test('host menu mouse and keyboard selection stay native', async ({ page }) => {
+  await page.evaluate(() => fixture.mountHostPicker());
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click();
+  await page.getByRole('button', { name: 'Change host', exact: true }).click();
+  // Monaco intentionally delays menu mouse-up activation for 100ms after opening.
+  await page.waitForTimeout(150);
+  await page.getByRole('menuitem', { name: 'Host 1', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+  await page.keyboard.press('Home');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1, 0]);
+});
+
+test('selected page text does not block a host menu tap', async ({ page }) => {
+  await page.evaluate(() => fixture.mountHostPicker());
+  await page.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
+  await page.locator('.session-title').evaluate(e => {
+    const range = document.createRange();
+    range.selectNodeContents(e);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+  });
+  await page.getByRole('menuitem', { name: 'Host 1', exact: true }).tap();
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([1]);
+});
+
+test('dragging or cancelling a host menu touch never selects a PC', async ({ page }) => {
+  await page.evaluate(() => fixture.mountHostPicker(60));
+  await page.getByRole('button', { name: 'Sessions', exact: true }).tap();
+  await page.getByRole('button', { name: 'Change host', exact: true }).tap();
+  const result = await page.getByRole('menuitem', { name: 'Host 1', exact: true }).evaluate(async element => {
+    const emit = (type, y) => element.dispatchEvent(new PointerEvent(type, {
+      composed: true, bubbles: true, cancelable: true, pointerType: 'touch',
+      pointerId: 51, isPrimary: true, clientX: 80, clientY: y,
+    }));
+    emit('pointerdown', 210);
+    emit('pointercancel', 210);
+    emit('pointerup', 210);
+    const menu = element.closest('.monaco-menu');
+    emit('pointerdown', 210);
+    for (let y = 190; y >= 70; y -= 20) {
+      await new Promise(requestAnimationFrame);
+      emit('pointermove', y);
+    }
+    emit('pointerup', 70);
+    return { selections: fixture.hostSelections, scrollTop: menu.scrollTop };
+  });
+  expect(result.selections).toEqual([]);
+  expect(result.scrollTop).toBeGreaterThan(60);
+  await page.getByRole('menuitem', { name: 'Host 12', exact: true }).tap();
+  await expect.poll(() => page.evaluate(() => fixture.hostSelections)).toEqual([12]);
+});
+
 test('a gesture cancelled while scrolling does not collapse or edit anything', async ({ page }) => {
   await page.locator('.interactive-request p').evaluate(element => {
     for (const [type, y] of [['pointerdown', 100], ['pointermove', 150], ['pointerup', 150]]) {

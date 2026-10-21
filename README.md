@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.1: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.2: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -13,6 +13,14 @@ Main chat text and session titles use 16px text, the navigation and script
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.2 fixes touch selection in the Sessions host picker. Native menus
+inside Shadow DOM retarget touch events to their outer picker button, which
+can reopen the dropdown instead of selecting the PC. The script resolves the
+actual touched menu row and invokes its native tap action once. Menu dragging
+still uses native scrolling; cancelled touches and disabled actions do not
+select a host. Mouse and keyboard handling are unchanged. No tunnel settings
+or connection credentials are changed by the fix.
 
 Version 0.3.1 fixes blank transcripts and broken jumps from the left prompt
 timeline after changing panes or loading history in the background. Inactive

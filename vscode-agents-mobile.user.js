@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.1
+// @version      0.3.2
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -546,12 +546,16 @@
   }
 
   function eventElement(event) {
-    const target = event.initialTarget || event.wrappedJSObject?.initialTarget || event.target;
+    const target = event.initialTarget || event.wrappedJSObject?.initialTarget || event.composedPath()[0] || event.target;
     return target?.nodeType === 1 && typeof target.closest === 'function' ? target : target?.parentElement;
   }
 
   function touchTarget(element) {
     if (!element) return;
+    if (element.getRootNode().host?.classList.contains('shadow-root-host')) {
+      const item = element.closest('.monaco-menu .action-item');
+      if (item) return { kind: 'menu', element: item };
+    }
     const twistie = element.closest('.sessions-list-control .session-chat-twistie.collapsible, .sessions-list-control .session-section-chevron.collapsible');
     if (twistie) return { kind: 'chevron', element: twistie };
     if (element.closest(interactiveSelector)) return;
@@ -572,6 +576,15 @@
 
   function nativeClick(element) {
     const event = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0, detail: 1 });
+    nativeEvents.add(event);
+    element.dispatchEvent(event);
+  }
+
+  function nativeMenuTap(element) {
+    // The document-level native gesture engine cannot see a shadow menu's
+    // row through Touch.target; invoke that row's existing tap action instead.
+    const event = new Event('-monaco-gesturetap', { cancelable: true });
+    event.initialTarget = element;
     nativeEvents.add(event);
     element.dispatchEvent(event);
   }
@@ -605,9 +618,10 @@
 
   function startNativePan(event, element) {
     if (!initializedLayout || window.getSelection()?.toString() || (window.visualViewport?.scale || 1) > 1.05) return;
+    const menu = element.closest('.monaco-menu');
     const host = element.closest('.interactive-list, .sessions-list-control')
       || element.closest('.interactive-session')?.querySelector('.interactive-list');
-    const scroller = host?.querySelector('.monaco-list-rows');
+    const scroller = menu?.querySelector('.actions-container') || host?.querySelector('.monaco-list-rows');
     if (!scroller) return;
     nativePan = { id: event.pointerId, scroller, x: event.clientX, y: event.clientY, lastEvent: event, moving: false };
     // Initialize only Monaco's scrolling engine, not its row-focus handlers.
@@ -681,7 +695,7 @@
     if (!target) return;
     gesture = { ...target, id: event.pointerId, x: event.clientX, y: event.clientY, started: performance.now(), moved: false };
     startNativePan(event, target.element);
-    suppress(event);
+    suppress(event, target.kind === 'menu');
   }, { capture: true });
   on(window, 'pointermove', event => {
     const moved = gesture?.id === event.pointerId && Math.hypot(event.clientX - gesture.x, event.clientY - gesture.y) > 6;
@@ -710,8 +724,10 @@
     if (Math.hypot(event.clientX - current.x, event.clientY - current.y) > 6) current.moved = true;
     rememberGesture(current);
     suppress(event);
-    if (current.moved || performance.now() - current.started >= 450 || window.getSelection()?.toString()) return;
+    if (current.moved || performance.now() - current.started >= 450 ||
+        (current.kind !== 'menu' && window.getSelection()?.toString())) return;
     if (!current.element.isConnected) return;
+    if (current.kind === 'menu') nativeMenuTap(current.element);
     if (current.kind === 'chevron') nativeClick(current.element);
     if (current.kind === 'request') {
       const row = current.element.closest('.interactive-request');
@@ -745,6 +761,7 @@
   }
   for (const type of ['-monaco-gesturetap', '-monaco-gesturecontextmenu']) {
     on(window, type, event => {
+      if (nativeEvents.has(event)) return;
       if (type === '-monaco-gesturetap' && guardSubmission(event)) return;
       const element = eventElement(event);
       if ((nativePan && element && nativePan.scroller.isSameNode(element)) || touchTarget(element) || chatLink(element)) suppress(event, true);
@@ -820,7 +837,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.1 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.2 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
