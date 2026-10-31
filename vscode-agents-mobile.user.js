@@ -8,6 +8,8 @@
 // @sandbox      raw
 // @grant        unsafeWindow
 // @noframes
+// @updateURL    https://raw.githubusercontent.com/ak800i/vscode-dev-agents-tampermonkey/master/vscode-agents-mobile.user.js
+// @downloadURL  https://raw.githubusercontent.com/ak800i/vscode-dev-agents-tampermonkey/master/vscode-agents-mobile.user.js
 // ==/UserScript==
 
 (() => {
