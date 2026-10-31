@@ -61,7 +61,9 @@ row in the composer.
 ## Install
 
 1. Install and enable Tampermonkey in Firefox on Android.
-2. Create a new script in Tampermonkey, replace its contents with
+2. Click **[Install the userscript](https://github.com/ak800i/vscode-dev-agents-tampermonkey/raw/master/vscode-agents-mobile.user.js)**
+   and confirm on Tampermonkey's install page. Alternatively, create a new script in
+   Tampermonkey, replace its contents with
    [vscode-agents-mobile.user.js](vscode-agents-mobile.user.js), and save it.
    Approve its page-access grant if Tampermonkey asks.
 3. Open `https://vscode.dev/agents` and turn **Desktop site OFF** in Firefox's menu.
