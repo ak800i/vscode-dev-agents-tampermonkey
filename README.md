@@ -3,16 +3,25 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.5: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.6: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
 and context settings without the desktop zoom-out.
 
-Main chat text and session titles use 16px text, the navigation and script
+Transcript text uses 14px type with reduced horizontal gutters and reasoning
+indentation. The input and session titles retain 16px text. The navigation and script
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.6 reduces oversized transcript text and wasted space without
+removing the native activity strip. Typing no longer synchronously focuses,
+selects, copies, and replaces the native editor on every input event. Native
+draft updates are batched after a 200ms typing pause and flushed immediately
+for submission, native-editor handoff, blur, pagehide, or disposal. IME
+composition waits until it ends; concurrent native edits still block sending
+and retain the local draft.
 
 Version 0.3.5 reveals Chat after native session or child-chat activation by
 touch, mouse, or keyboard Enter. Firefox Android's native tree handles taps
@@ -145,6 +154,9 @@ When a virtual keyboard shrinks only the visible viewport, the focused
 composer is moved above it rather than merely shrinking its outer panel.
 
 Disable the script in Tampermonkey and reload to remove the adaptation.
+If a queued draft cannot be synchronized, disposal is refused with an explicit
+message so it is not discarded. Finish composing or copy/recover the draft
+before disabling the script.
 
 ### Transcript scrolling and rendering
 

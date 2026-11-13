@@ -112,6 +112,7 @@ test('empty replacement, Unicode, and replacing a selection round trip', async (
 test('IME composition is not mirrored or sent until composition finishes', async ({ page }) => {
   const input = page.locator('.tm-agents-input');
   await input.fill('before');
+  await expect.poll(() => page.evaluate(() => fixture.text())).toBe('before');
   await input.evaluate(element => {
     element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     element.value = 'before\u6d4b';
@@ -484,6 +485,7 @@ test('EditContext replacements do not depend on a render frame between inputs', 
     return values.map(value => {
       input.value = value;
       input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+      input.dispatchEvent(new FocusEvent('blur'));
       return fixture.text();
     });
   }, values);
@@ -521,6 +523,7 @@ test('native gesture activation cannot send an unsynced draft', async ({ page })
 
 test('native line-break changes reach the visible draft', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('onetwo');
+  await expect.poll(() => page.evaluate(() => fixture.text())).toBe('onetwo');
   await page.evaluate(async () => {
     for (let i = 0; i < 4; i++) await new Promise(resolve => requestAnimationFrame(resolve));
   });
@@ -530,6 +533,7 @@ test('native line-break changes reach the visible draft', async ({ page }) => {
 
 test('a native change immediately before submission requires reviewing the updated draft', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Visible draft');
+  await expect.poll(() => page.evaluate(() => fixture.text())).toBe('Visible draft');
   await page.evaluate(() => {
     fixture.setText('Native update');
     const send = document.querySelector('.native-send');
@@ -1096,6 +1100,7 @@ test('real touch input keeps scrolling after the starting row is virtualized awa
 
 test('idle input rerenders do not repeatedly copy or focus the native editor', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Same input');
+  await expect.poll(() => page.evaluate(() => fixture.text())).toBe('Same input');
   const copies = await page.evaluate(async () => {
     for (let i = 0; i < 6; i++) await new Promise(resolve => requestAnimationFrame(resolve));
     let count = 0;
@@ -1114,4 +1119,132 @@ test('idle input rerenders do not repeatedly copy or focus the native editor', a
     }
   });
   expect(copies).toBe(0);
+});
+
+test('typing a rapid burst does not hand keyboard focus to Monaco for every input', async ({ page }) => {
+  const input = page.locator('.tm-agents-input');
+  await input.focus();
+  const metrics = await page.evaluate(async () => {
+    let focuses = 0;
+    let copies = 0;
+    const focus = event => { if (event.target.closest?.('.monaco-editor')) focuses++; };
+    const copy = () => copies++;
+    document.addEventListener('focusin', focus);
+    document.addEventListener('copy', copy, true);
+    const input = document.querySelector('.tm-agents-input');
+    let maximumInputMs = 0;
+    try {
+      for (let i = 1; i <= 30; i++) {
+        input.value = 'typing without keyboard restarts'.slice(0, i);
+        const started = performance.now();
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: input.value.slice(-1) }));
+        maximumInputMs = Math.max(maximumInputMs, performance.now() - started);
+      }
+      await new Promise(resolve => setTimeout(resolve, 350));
+      return { focuses, copies, maximumInputMs, draft: input.value, model: fixture.text(), focused: document.activeElement === input };
+    } finally {
+      document.removeEventListener('focusin', focus);
+      document.removeEventListener('copy', copy, true);
+    }
+  });
+  console.log(`Typing bridge: ${JSON.stringify(metrics)}`);
+  expect(metrics.focuses).toBeLessThanOrEqual(2);
+  expect(metrics.maximumInputMs).toBeLessThan(50);
+  expect(metrics.copies).toBeLessThanOrEqual(3);
+  expect(metrics.model).toBe(metrics.draft);
+  expect(metrics.focused).toBe(true);
+});
+
+test('compact transcript text uses smaller type and reaches the available right edge', async ({ page }) => {
+  await page.evaluate(() => fixture.mountIndentedTranscript());
+  const metrics = await page.locator('.interactive-response .rendered-markdown p').evaluate(e => {
+    const r = e.getBoundingClientRect();
+    const bounds = e.closest('.interactive-list').getBoundingClientRect();
+    return {
+      fontSize: parseFloat(getComputedStyle(e).fontSize),
+      leftGap: r.left - bounds.left, rightGap: bounds.right - r.right,
+      width: r.width, containerWidth: bounds.width,
+    };
+  });
+  expect(metrics.fontSize).toBe(14);
+  expect(metrics.leftGap).toBeLessThanOrEqual(40);
+  expect(metrics.rightGap).toBeLessThanOrEqual(12);
+  expect(metrics.width / metrics.containerWidth).toBeGreaterThanOrEqual(.85);
+  expect(await page.locator('.tm-agents-input').evaluate(e => parseFloat(getComputedStyle(e).fontSize))).toBe(16);
+});
+
+test('sending immediately after typing flushes the entire latest burst once', async ({ page }) => {
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    for (const value of ['First', 'First line\nSecond', 'First line\nSecond line \u{1F600}']) {
+      input.value = value;
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+    }
+    document.querySelector('.native-send').click();
+  });
+  await expect.poll(() => page.evaluate(() => fixture.sends.map(text => text.replace(/\r\n/g, '\n')))).toEqual(['First line\nSecond line \u{1F600}']);
+  await expect(page.locator('.tm-agents-input')).toHaveValue('');
+});
+
+test('a native update during queued typing retains the visible draft and blocks sending', async ({ page }) => {
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    input.value = 'Unsynced local text';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: input.value }));
+    fixture.setText('Concurrent native edit');
+    document.querySelector('.native-send').click();
+  });
+  await expect(page.locator('.tm-agents-input')).toHaveValue('Unsynced local text');
+  await expect(page.locator('.tm-agents-status')).toContainText('Not synced');
+  expect(await page.evaluate(() => fixture.sends)).toEqual([]);
+});
+
+test('leaving the input and disposing flush queued drafts rather than dropping them', async ({ page }) => {
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    input.focus();
+    input.value = 'Draft before navigating';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: input.value }));
+    document.querySelector('.tm-agents-nav [data-view="sessions"]').click();
+  });
+  expect(await page.evaluate(() => fixture.text())).toBe('Draft before navigating');
+  await page.getByRole('button', { name: 'Chat', exact: true }).click();
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    input.value = 'Draft before disposal';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: input.value }));
+    window.__vscodeAgentsMobile.dispose();
+  });
+  expect(await page.evaluate(() => fixture.text())).toBe('Draft before disposal');
+});
+
+test('an IME composition cancels the pending typing flush until it finishes', async ({ page }) => {
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    input.value = 'prefix';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'prefix' }));
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = 'prefix\u6d4b\u8bd5';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+  });
+  await page.waitForTimeout(350);
+  expect(await page.evaluate(() => fixture.text())).toBe('');
+  await page.locator('.tm-agents-input').dispatchEvent('compositionend');
+  await expect.poll(() => page.evaluate(() => fixture.text())).toBe('prefix\u6d4b\u8bd5');
+});
+
+test('disposal retains a queued draft that cannot be synchronized', async ({ page }) => {
+  const disposed = await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    const native = document.querySelector('.inputarea');
+    native.addEventListener('input', event => event.stopImmediatePropagation(), true);
+    input.value = 'Keep this failed draft';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, data: input.value }));
+    return window.__vscodeAgentsMobile.dispose();
+  });
+  expect(disposed).toBe(false);
+  expect(await page.evaluate(() => window.__vscodeAgentsMobile.dispose())).toBe(false);
+  await expect(page.locator('.tm-agents-input')).toHaveValue('Keep this failed draft');
+  await expect(page.locator('.tm-agents-status')).toContainText('could not be saved');
+  expect(await page.evaluate(() => fixture.sends)).toEqual([]);
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.5
+// @version      0.3.6
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -19,7 +19,7 @@
   if (!matchMedia('(pointer: coarse)').matches && !/Android/i.test(navigator.userAgent)) return;
 
   const instanceKey = '__vscodeAgentsMobile';
-  window[instanceKey]?.dispose();
+  if (window[instanceKey]?.dispose() === false) return;
   const pageWindow = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
   const pageNavigator = pageWindow.navigator;
   const originalUserAgent = pageNavigator.userAgent;
@@ -191,7 +191,16 @@
     html.tm-agents-mobile .interactive-request .rendered-markdown,
     html.tm-agents-mobile .interactive-response .rendered-markdown {
       -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default;
-      font-size: 16px !important; line-height: 1.5;
+      font-size: 14px !important; line-height: 1.5;
+    }
+    html.tm-agents-mobile .part.sessionspart .interactive-list .interactive-item-container:not(.chat-sticky-progress) {
+      max-width: none !important; padding-left: 16px !important; padding-right: 8px !important;
+    }
+    html.tm-agents-mobile .part.sessionspart .interactive-response .chat-thinking-collapsible {
+      margin-left: 8px !important; padding-inline: 0 !important;
+    }
+    html.tm-agents-mobile .part.sessionspart .interactive-response .chat-thinking-item.markdown-content {
+      padding-left: 12px !important;
     }
     html.tm-agents-mobile .chat-model-picker-model .action-list-item-toolbar { visibility: visible !important; }
     html.tm-agents-mobile .context-view { max-width: calc(100vw - 8px); z-index: 3000 !important; }
@@ -317,6 +326,8 @@
   }
 
   function sync(state) {
+    clearTimeout(state.syncTimer);
+    state.syncTimer = undefined;
     if (state.composing || state.nativeMode) return false;
     if (!isLaidOut(state.editor)) {
       state.pendingSync = true;
@@ -327,6 +338,7 @@
       state.lastNative = state.input.value;
       state.error = '';
       state.pendingSync = false;
+      state.renderedInput = renderedInput(state.editor);
       text(state.status, '');
       return true;
     } catch (error) {
@@ -336,8 +348,15 @@
     }
   }
 
+  function queueSync(state) {
+    clearTimeout(state.syncTimer);
+    state.pendingSync = true;
+    // Keep native focus/select/copy work out of the keyboard's input handler.
+    if (!state.composing) state.syncTimer = setTimeout(() => sync(state), 200);
+  }
+
   function refreshNative(state) {
-    if (!isLaidOut(state.editor) || state.syncing || state.composing || state.error || state.nativeMode) return;
+    if (!isLaidOut(state.editor) || state.syncing || state.pendingSync || state.composing || state.error || state.nativeMode) return;
     try {
       const value = readNative(state);
       if (value !== state.lastNative) {
@@ -424,10 +443,16 @@
       input.hidden = true;
       text(state.status, `Touch editor unavailable: ${state.error} The native editor remains enabled.`);
     }
-    on(input, 'input', event => { if (!event.isComposing) sync(state); });
+    on(input, 'input', event => { if (!event.isComposing) queueSync(state); });
+    on(input, 'blur', () => { if (!state.syncing && state.pendingSync) sync(state); });
     on(input, 'focus', () => activateEditor(state));
-    on(input, 'compositionstart', () => { state.composing = true; });
-    on(input, 'compositionend', () => { state.composing = false; sync(state); });
+    on(input, 'compositionstart', () => {
+      state.composing = true;
+      state.pendingSync = true;
+      clearTimeout(state.syncTimer);
+      state.syncTimer = undefined;
+    });
+    on(input, 'compositionend', () => { state.composing = false; queueSync(state); });
     on(editor, 'focusin', () => {
       if (!state.syncing) activateEditor(state);
       if (!state.syncing && !state.nativeMode) input.focus({ preventScroll: true });
@@ -698,6 +723,8 @@
               state.error = '';
               text(state.status, 'The native prompt changed. Review it, then tap Send again.');
             } else if (sync(state)) {
+              cancelAnimationFrame(state.nativeFrame);
+              state.nativeFrame = requestAnimationFrame(() => refreshNative(state));
               continue;
             }
           } catch (error) {
@@ -891,7 +918,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.5 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.6 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
@@ -920,6 +947,7 @@
       if (!editor.isConnected) {
         state.observer?.disconnect();
         cancelAnimationFrame(state.nativeFrame);
+        clearTimeout(state.syncTimer);
         state.editor.removeAttribute('data-tm-agents-native');
         state.host.classList.remove('tm-agents-editor-host');
         state.input.remove();
@@ -976,8 +1004,20 @@
   on(document, 'DOMContentLoaded', scheduleRefresh);
   on(window, 'resize', scheduleRefresh);
   on(window.visualViewport || window, 'resize', scheduleRefresh);
+  on(window, 'pagehide', () => {
+    for (const state of editors.values()) if (state.pendingSync && !state.composing) sync(state);
+  });
   window[instanceKey] = {
     dispose() {
+      for (const state of editors.values()) {
+        if (!state.nativeMode && (state.pendingSync || state.error || state.input.value !== state.lastNative) &&
+            (state.composing || !sync(state))) {
+          const message = 'The pending draft could not be saved to the native editor. Finish typing or resolve Not synced before disabling the script.';
+          text(state.status, message);
+          console.error('[VS Code Agents Mobile]', message);
+          return false;
+        }
+      }
       finishNativePan(true);
       if (nativeMomentum) emitNativeTouch('touchstart');
       disposed = true;
@@ -991,6 +1031,7 @@
       for (const state of editors.values()) {
         state.observer?.disconnect();
         cancelAnimationFrame(state.nativeFrame);
+        clearTimeout(state.syncTimer);
         state.editor.removeAttribute('data-tm-agents-native');
         state.host.classList.remove('tm-agents-editor-host');
         state.input.remove();

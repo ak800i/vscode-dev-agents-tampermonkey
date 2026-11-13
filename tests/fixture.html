@@ -239,6 +239,32 @@
           minimap: { enabled: false }, editContext: false,
         });
       };
+      fixture.mountIndentedTranscript = () => {
+        const session = document.querySelector('.interactive-session');
+        const list = session.querySelector('[role="list"]');
+        list.classList.add('interactive-list');
+        const response = list.querySelector('.interactive-response');
+        response.classList.add('chat-persistent-progress');
+        const style = document.createElement('style');
+        style.textContent = '.interactive-list .interactive-item-container { padding:12px 24px;box-sizing:border-box; }' +
+          '.chat-thinking-collapsible { margin-left:16px;padding:0 20px 0 0; }' +
+          '.chat-thinking-item.markdown-content { padding-left:19px; }' +
+          '.chat-thinking-box { --chat-persistent-nested-indent:16px; }';
+        document.head.append(style);
+        const value = response.querySelector('.value');
+        const markdown = value.querySelector('.rendered-markdown');
+        const thinking = document.createElement('div');
+        thinking.className = 'chat-thinking-box chat-thinking-conversation';
+        const collapsible = document.createElement('div');
+        collapsible.className = 'chat-used-context-list chat-thinking-collapsible';
+        const item = document.createElement('div');
+        item.className = 'chat-thinking-item markdown-content';
+        item.append(markdown);
+        collapsible.append(item);
+        thinking.append(collapsible);
+        value.append(thinking);
+        markdown.querySelector('p').textContent = 'A longer reasoning paragraph uses the available portrait width without large desktop gutters.';
+      };
       fixture.mountHostPicker = (count = 2, { footer = false } = {}) => {
         const workbench = document.querySelector('.monaco-workbench');
         const contextViewService = new ContextViewService({
