@@ -47,6 +47,11 @@ test.beforeEach(async ({ page, context }) => {
   await openFixture(page, context);
 });
 
+// Typing never syncs while the touch input is focused; leaving it does.
+async function leaveInput(page) {
+  await page.locator('.tm-agents-input').evaluate(element => element.blur());
+}
+
 async function chooseEditor(page, label) {
   await page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'More', exact: true }).click();
   await page.getByRole('menuitem', { name: label, exact: true }).click();
@@ -57,10 +62,13 @@ test('provides a native selectable textarea, without accessing Monaco globals', 
   await expect(input).toHaveCount(1);
   await expect(page.locator('.tm-agents-status')).toHaveText('');
   await input.fill('First line\nSecond line \u{1F600}');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('First line\nSecond line \u{1F600}');
+  await input.focus();
   await input.evaluate(element => element.setSelectionRange(6, 10));
   await page.keyboard.insertText('paragraph');
   await expect(input).toHaveValue('First paragraph\nSecond line \u{1F600}');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('First paragraph\nSecond line \u{1F600}');
 });
 
@@ -73,13 +81,15 @@ test('Enter, Shift+Enter, and Ctrl+Enter never send from the mobile input', asyn
   await page.keyboard.insertText('three');
   await input.press('Control+Enter');
   await expect(input).toHaveValue('one\ntwo\nthree');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('one\ntwo\nthree');
 });
 
 test('only an explicit Send sends once and native clearing reaches the textarea', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Explicit send only');
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  // The empty-model Send is aria-disabled like VS Code's, yet still tappable.
+  await page.getByRole('button', { name: 'Send', exact: true }).click({ force: true });
   await expect.poll(() => page.evaluate(() => fixture.sends)).toEqual(['Explicit send only']);
   await expect(page.locator('.tm-agents-input')).toHaveValue('');
 });
@@ -105,6 +115,7 @@ test('empty replacement, Unicode, and replacing a selection round trip', async (
   const input = page.locator('.tm-agents-input');
   for (const value of ['hello\nworld', '', 'caf\u00e9 \u{1F600}\n\u6d4b\u8bd5', 'final\n']) {
     await input.fill(value);
+    await leaveInput(page);
     await expect.poll(() => page.evaluate(() => fixture.text())).toBe(value);
   }
 });
@@ -112,15 +123,20 @@ test('empty replacement, Unicode, and replacing a selection round trip', async (
 test('IME composition is not mirrored or sent until composition finishes', async ({ page }) => {
   const input = page.locator('.tm-agents-input');
   await input.fill('before');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('before');
+  await input.focus();
   await input.evaluate(element => {
     element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     element.value = 'before\u6d4b';
     element.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
     element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 229, isComposing: true, bubbles: true }));
+    element.blur();
   });
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('before');
+  await input.focus();
   await input.evaluate(element => element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('before\u6d4b');
   await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
 });
@@ -470,6 +486,7 @@ test('EditContext input uses native CRLF offsets without corrupting Unicode', as
   const input = page.locator('.tm-agents-input');
   for (const value of ['one\ntwo \u{1F600}', 'short\n', 'caf\u00e9\n\u6d4b\u8bd5', '']) {
     await input.fill(value);
+    await leaveInput(page);
     await expect.poll(() => page.evaluate(() => fixture.text())).toBe(value);
     await expect(page.locator('.tm-agents-status')).toHaveText('');
   }
@@ -495,20 +512,22 @@ test('EditContext replacements do not depend on a render frame between inputs', 
 
 test('a failed native update blocks both Send and Steer with Message', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Confirmed draft');
+  await leaveInput(page);
   await page.evaluate(() => {
     const native = document.querySelector('.inputarea');
     native.addEventListener('input', event => event.stopImmediatePropagation(), true);
     document.querySelector('.native-send').setAttribute('aria-label', 'Steer with Message');
   });
   await page.locator('.tm-agents-input').fill('Unsynced draft');
-  await expect(page.getByRole('status')).toContainText('Not synced');
   await page.getByRole('button', { name: 'Steer with Message', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Not synced');
   await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
   await expect(page.locator('.tm-agents-input')).toHaveValue('Unsynced draft');
 });
 
 test('native gesture activation cannot send an unsynced draft', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Confirmed draft');
+  await leaveInput(page);
   await page.evaluate(() => document.querySelector('.inputarea')
     .addEventListener('input', event => event.stopImmediatePropagation(), true));
   await page.locator('.tm-agents-input').fill('Unsynced draft');
@@ -523,6 +542,7 @@ test('native gesture activation cannot send an unsynced draft', async ({ page })
 
 test('native line-break changes reach the visible draft', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('onetwo');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('onetwo');
   await page.evaluate(async () => {
     for (let i = 0; i < 4; i++) await new Promise(resolve => requestAnimationFrame(resolve));
@@ -533,6 +553,7 @@ test('native line-break changes reach the visible draft', async ({ page }) => {
 
 test('a native change immediately before submission requires reviewing the updated draft', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Visible draft');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('Visible draft');
   await page.evaluate(() => {
     fixture.setText('Native update');
@@ -1067,6 +1088,7 @@ test('new inline editors are still discovered inside transcript messages', async
   const input = page.locator('.interactive-request .tm-agents-input');
   await expect(input).toHaveValue('Earlier prompt');
   await input.fill('Edited from the touch input');
+  await input.evaluate(element => element.blur());
   await expect.poll(() => page.evaluate(() => fixture.inlineEditor.getValue())).toBe('Edited from the touch input');
   await expect.poll(() => page.evaluate(() => fixture.sends.length)).toBe(0);
 });
@@ -1100,6 +1122,7 @@ test('real touch input keeps scrolling after the starting row is virtualized awa
 
 test('idle input rerenders do not repeatedly copy or focus the native editor', async ({ page }) => {
   await page.locator('.tm-agents-input').fill('Same input');
+  await leaveInput(page);
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('Same input');
   const copies = await page.evaluate(async () => {
     for (let i = 0; i < 6; i++) await new Promise(resolve => requestAnimationFrame(resolve));
@@ -1121,10 +1144,14 @@ test('idle input rerenders do not repeatedly copy or focus the native editor', a
   expect(copies).toBe(0);
 });
 
-test('typing a rapid burst does not hand keyboard focus to Monaco for every input', async ({ page }) => {
+test('typing never moves keyboard focus, and leaving the input syncs once without a read-back', async ({ page }) => {
   const input = page.locator('.tm-agents-input');
   await input.focus();
   const metrics = await page.evaluate(async () => {
+    const frames = count => new Promise(resolve => {
+      const step = () => (count-- > 0 ? requestAnimationFrame(step) : resolve());
+      step();
+    });
     let focuses = 0;
     let copies = 0;
     const focus = event => { if (event.target.closest?.('.monaco-editor')) focuses++; };
@@ -1134,25 +1161,29 @@ test('typing a rapid burst does not hand keyboard focus to Monaco for every inpu
     const input = document.querySelector('.tm-agents-input');
     let maximumInputMs = 0;
     try {
-      for (let i = 1; i <= 30; i++) {
-        input.value = 'typing without keyboard restarts'.slice(0, i);
+      // Pauses between keys are longer than any typing debounce.
+      for (let i = 1; i <= 8; i++) {
+        input.value = 'typing without keyboard restarts'.slice(0, i * 4);
         const started = performance.now();
         input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: input.value.slice(-1) }));
         maximumInputMs = Math.max(maximumInputMs, performance.now() - started);
+        await new Promise(resolve => setTimeout(resolve, 260));
       }
-      await new Promise(resolve => setTimeout(resolve, 350));
-      return { focuses, copies, maximumInputMs, draft: input.value, model: fixture.text(), focused: document.activeElement === input };
+      const typing = { focuses, copies, model: fixture.text(), focused: document.activeElement === input };
+      input.blur();
+      const blurCopies = copies;
+      await frames(6);
+      return { typing, maximumInputMs, blurCopies, settledCopies: copies, draft: input.value, model: fixture.text() };
     } finally {
       document.removeEventListener('focusin', focus);
       document.removeEventListener('copy', copy, true);
     }
   });
   console.log(`Typing bridge: ${JSON.stringify(metrics)}`);
-  expect(metrics.focuses).toBeLessThanOrEqual(2);
+  expect(metrics.typing).toEqual({ focuses: 0, copies: 0, model: '', focused: true });
   expect(metrics.maximumInputMs).toBeLessThan(50);
-  expect(metrics.copies).toBeLessThanOrEqual(3);
   expect(metrics.model).toBe(metrics.draft);
-  expect(metrics.focused).toBe(true);
+  expect(metrics.settledCopies).toBe(metrics.blurCopies);
 });
 
 test('compact transcript text uses smaller type and reaches the available right edge', async ({ page }) => {
@@ -1218,19 +1249,44 @@ test('leaving the input and disposing flush queued drafts rather than dropping t
   expect(await page.evaluate(() => fixture.text())).toBe('Draft before disposal');
 });
 
-test('an IME composition cancels the pending typing flush until it finishes', async ({ page }) => {
+test('an IME composition is not flushed on blur until it finishes', async ({ page }) => {
   await page.evaluate(() => {
     const input = document.querySelector('.tm-agents-input');
+    input.focus();
     input.value = 'prefix';
     input.dispatchEvent(new InputEvent('input', { bubbles: true, data: 'prefix' }));
     input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     input.value = 'prefix\u6d4b\u8bd5';
     input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    input.blur();
   });
   await page.waitForTimeout(350);
   expect(await page.evaluate(() => fixture.text())).toBe('');
-  await page.locator('.tm-agents-input').dispatchEvent('compositionend');
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
+    input.focus();
+    input.blur();
+  });
   await expect.poll(() => page.evaluate(() => fixture.text())).toBe('prefix\u6d4b\u8bd5');
+});
+
+test('a gesture tap and click on a still-disabled Send submit the new draft exactly once', async ({ page }) => {
+  await page.evaluate(() => {
+    const input = document.querySelector('.tm-agents-input');
+    input.focus();
+    input.value = 'Typed without syncing';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: input.value }));
+    const send = document.querySelector('.native-send');
+    const tap = new Event('-monaco-gesturetap', { bubbles: true, cancelable: true });
+    Object.defineProperty(tap, 'initialTarget', { value: send });
+    send.dispatchEvent(tap);
+    send.click();
+  });
+  await expect.poll(() => page.evaluate(() => fixture.sends)).toEqual(['Typed without syncing']);
+  await page.waitForTimeout(300);
+  expect(await page.evaluate(() => fixture.sends)).toEqual(['Typed without syncing']);
+  await expect(page.locator('.tm-agents-input')).toHaveValue('');
 });
 
 test('disposal retains a queued draft that cannot be synchronized', async ({ page }) => {

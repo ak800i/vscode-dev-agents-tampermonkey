@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.6: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.7: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -15,13 +15,19 @@ controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
 
-Version 0.3.6 reduces oversized transcript text and wasted space without
-removing the native activity strip. Typing no longer synchronously focuses,
-selects, copies, and replaces the native editor on every input event. Native
-draft updates are batched after a 200ms typing pause and flushed immediately
-for submission, native-editor handoff, blur, pagehide, or disposal. IME
-composition waits until it ends; concurrent native edits still block sending
-and retain the local draft.
+Version 0.3.7 never moves keyboard focus while you type. Earlier versions
+updated the native editor during typing pauses by briefly focusing it. Each
+focus change restarted the Android keyboard, so it dropped keys and switched
+back to Shift. The draft now reaches the native editor only when you leave the
+input, tap Send, switch views, hand off to the native editor, or leave the page.
+VS Code enables its Send button a moment after the prompt changes, so a Send tap
+that delivers a new draft waits for the button and then presses it once. While
+a draft is pending, Send keeps its enabled colors. IME composition is never
+flushed before it ends; concurrent native edits still block sending and retain
+the local draft.
+
+Version 0.3.6 reduced oversized transcript text and wasted space without
+removing the native activity strip.
 
 Version 0.3.5 reveals Chat after native session or child-chat activation by
 touch, mouse, or keyboard Enter. Firefox Android's native tree handles taps
@@ -154,7 +160,7 @@ When a virtual keyboard shrinks only the visible viewport, the focused
 composer is moved above it rather than merely shrinking its outer panel.
 
 Disable the script in Tampermonkey and reload to remove the adaptation.
-If a queued draft cannot be synchronized, disposal is refused with an explicit
+If a pending draft cannot be synchronized, disposal is refused with an explicit
 message so it is not discarded. Finish composing or copy/recover the draft
 before disabling the script.
 

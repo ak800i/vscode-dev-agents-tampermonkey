@@ -418,7 +418,14 @@
       // The installed app does not export Monaco's API; exercise the DOM bridge.
       window.monaco = undefined;
 
+      // Like VS Code, Send is disabled for an empty prompt and its enablement
+      // follows model changes asynchronously rather than within the edit.
+      const sendButton = document.querySelector('.native-send');
+      const updateSendEnablement = () => sendButton.setAttribute('aria-disabled', String(!editor.getValue()));
+      updateSendEnablement();
+      editor.onDidChangeModelContent(() => setTimeout(updateSendEnablement, 30));
       const send = () => {
+        if (sendButton.getAttribute('aria-disabled') === 'true') return;
         fixture.sends.push(editor.getValue());
         editor.setValue('');
       };

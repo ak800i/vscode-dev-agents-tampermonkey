@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.6
+// @version      0.3.7
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -203,6 +203,10 @@
       padding-left: 12px !important;
     }
     html.tm-agents-mobile .chat-model-picker-model .action-list-item-toolbar { visibility: visible !important; }
+    html.tm-agents-mobile .monaco-workbench [data-tm-agents-draft] .chat-submit-button.disabled .action-label.codicon {
+      color: var(--vscode-button-foreground) !important;
+      background-color: var(--vscode-button-background) !important;
+    }
     html.tm-agents-mobile .context-view { max-width: calc(100vw - 8px); z-index: 3000 !important; }
     html.tm-agents-mobile .tabbed-action-list-details { max-width: calc(100vw - 24px); }
     html.tm-agents-mobile .tabbed-action-list-details button,
@@ -326,15 +330,16 @@
   }
 
   function sync(state) {
-    clearTimeout(state.syncTimer);
-    state.syncTimer = undefined;
     if (state.composing || state.nativeMode) return false;
     if (!isLaidOut(state.editor)) {
       state.pendingSync = true;
       return false;
     }
     try {
-      if (state.input.value !== state.lastNative || state.error) writeNative(state, state.input.value);
+      if (state.input.value !== state.lastNative || state.error) {
+        writeNative(state, state.input.value);
+        state.expectEcho = true;
+      }
       state.lastNative = state.input.value;
       state.error = '';
       state.pendingSync = false;
@@ -345,14 +350,21 @@
       state.pendingSync = false;
       report(state, error);
       return false;
+    } finally {
+      markDraft(state);
     }
   }
 
-  function queueSync(state) {
-    clearTimeout(state.syncTimer);
+  // Syncing moves focus into Monaco, which restarts Android keyboards (lost
+  // keys, Shift reset). Typing only marks the draft; it is synced when the
+  // input is left, on Send, on navigation, and before the page goes away.
+  function markPending(state) {
     state.pendingSync = true;
-    // Keep native focus/select/copy work out of the keyboard's input handler.
-    if (!state.composing) state.syncTimer = setTimeout(() => sync(state), 200);
+    markDraft(state);
+  }
+
+  function markDraft(state) {
+    composer(state)?.toggleAttribute('data-tm-agents-draft', state.pendingSync && state.input.value.trim() !== '');
   }
 
   function refreshNative(state) {
@@ -443,16 +455,14 @@
       input.hidden = true;
       text(state.status, `Touch editor unavailable: ${state.error} The native editor remains enabled.`);
     }
-    on(input, 'input', event => { if (!event.isComposing) queueSync(state); });
+    on(input, 'input', () => markPending(state));
     on(input, 'blur', () => { if (!state.syncing && state.pendingSync) sync(state); });
     on(input, 'focus', () => activateEditor(state));
     on(input, 'compositionstart', () => {
       state.composing = true;
-      state.pendingSync = true;
-      clearTimeout(state.syncTimer);
-      state.syncTimer = undefined;
+      markPending(state);
     });
-    on(input, 'compositionend', () => { state.composing = false; queueSync(state); });
+    on(input, 'compositionend', () => { state.composing = false; markPending(state); });
     on(editor, 'focusin', () => {
       if (!state.syncing) activateEditor(state);
       if (!state.syncing && !state.nativeMode) input.focus({ preventScroll: true });
@@ -463,6 +473,13 @@
         const current = renderedInput(editor);
         if (current !== state.renderedInput) {
           state.renderedInput = current;
+          // Monaco rendering this script's own write needs no read-back.
+          // Rendered lines use NBSP for spaces and split wrapped lines.
+          const flat = value => value.replace(/\u00a0/g, ' ').replace(/\n/g, '');
+          if (state.expectEcho && !state.pendingSync && flat(current) === flat(state.lastNative)) {
+            state.expectEcho = false;
+            return;
+          }
           cancelAnimationFrame(state.nativeFrame);
           state.nativeFrame = requestAnimationFrame(() => refreshNative(state));
         }
@@ -706,8 +723,42 @@
     return [...editors.values()].filter(state => !state.nativeMode && composer(state)?.contains(action));
   }
 
+  function isDisabled(action) {
+    return action.disabled || action.getAttribute('aria-disabled') === 'true' || !!action.closest('.action-item.disabled');
+  }
+
+  // VS Code enables Send asynchronously after the prompt model changes, so a
+  // draft synced by this tap would otherwise meet a still-disabled button.
+  function pressWhenEnabled(state, action) {
+    const label = action.getAttribute('aria-label');
+    const started = performance.now();
+    const attempt = () => {
+      state.sendFrame = 0;
+      if (disposed) return;
+      if (state.pendingSync && !sync(state)) return;
+      const current = action.isConnected ? action : [...composer(state)?.querySelectorAll('[aria-label]') || []]
+        .find(element => element.getAttribute('aria-label') === label);
+      if (current && !isDisabled(current)) {
+        state.sendQuietUntil = performance.now() + 700;
+        nativeClick(current);
+        cancelAnimationFrame(state.nativeFrame);
+        state.nativeFrame = requestAnimationFrame(() => refreshNative(state));
+      } else if (performance.now() - started < 1500) {
+        state.sendFrame = requestAnimationFrame(attempt);
+      } else {
+        text(state.status, 'VS Code did not enable Send for this draft. Tap Send again.');
+      }
+    };
+    state.sendFrame = requestAnimationFrame(attempt);
+  }
+
   function guardSubmission(event) {
-    for (const state of submissionStates(eventElement(event))) {
+    const element = eventElement(event);
+    for (const state of submissionStates(element)) {
+      if (state.sendFrame || performance.now() < (state.sendQuietUntil || 0)) {
+        suppress(event, true);
+        return true;
+      }
       if (!state.reviewRequired) {
         if (state.composing) {
           text(state.status, 'Finish composing the text before tapping Send.');
@@ -723,6 +774,12 @@
               state.error = '';
               text(state.status, 'The native prompt changed. Review it, then tap Send again.');
             } else if (sync(state)) {
+              const action = element.closest('button, [role="button"]');
+              if (isDisabled(action) && state.input.value.trim()) {
+                suppress(event, true);
+                pressWhenEnabled(state, action);
+                return true;
+              }
               cancelAnimationFrame(state.nativeFrame);
               state.nativeFrame = requestAnimationFrame(() => refreshNative(state));
               continue;
@@ -918,7 +975,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.6 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.7 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
@@ -947,7 +1004,8 @@
       if (!editor.isConnected) {
         state.observer?.disconnect();
         cancelAnimationFrame(state.nativeFrame);
-        clearTimeout(state.syncTimer);
+        cancelAnimationFrame(state.sendFrame);
+        composer(state)?.removeAttribute('data-tm-agents-draft');
         state.editor.removeAttribute('data-tm-agents-native');
         state.host.classList.remove('tm-agents-editor-host');
         state.input.remove();
@@ -1031,7 +1089,8 @@
       for (const state of editors.values()) {
         state.observer?.disconnect();
         cancelAnimationFrame(state.nativeFrame);
-        clearTimeout(state.syncTimer);
+        cancelAnimationFrame(state.sendFrame);
+        composer(state)?.removeAttribute('data-tm-agents-draft');
         state.editor.removeAttribute('data-tm-agents-native');
         state.host.classList.remove('tm-agents-editor-host');
         state.input.remove();
