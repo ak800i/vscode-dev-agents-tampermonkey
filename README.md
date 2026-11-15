@@ -3,7 +3,7 @@
 A standalone Tampermonkey userscript for `https://vscode.dev/agents`, aimed at
 Firefox on Android.
 
-**Version 0.3.7: keep Firefox's Desktop site OFF.** Desktop site can force a wide
+**Version 0.3.8: keep Firefox's Desktop site OFF.** Desktop site can force a wide
 viewport and shrink the entire interface, even when the page asks for device
 width. The script now keeps the browser's real phone-width viewport and selects
 VS Code's desktop-style controls at startup. This retains the native thinking
@@ -14,6 +14,12 @@ indentation. The input and session titles retain 16px text. The navigation and s
 controls have at least 44px touch targets, and the Sessions tree fills the
 available width. Inactive panes are fully hidden instead of allowing their
 contents to show through.
+
+Version 0.3.8 moves the floating session activity strip (Changes, Files,
+Browser, Terminal) into **More**, so the chat uses the strip's column. Entries
+show a check mark while their pane is open and any badge count. Choosing one
+runs VS Code's own action and switches to the pane it opens: Files for side-pane
+tabs, or the panel for Terminal. Closing the shown pane returns to Chat.
 
 Version 0.3.7 never moves keyboard focus while you type. Earlier versions
 updated the native editor during typing pauses by briefly focusing it. Each
@@ -26,8 +32,7 @@ a draft is pending, Send keeps its enabled colors. IME composition is never
 flushed before it ends; concurrent native edits still block sending and retain
 the local draft.
 
-Version 0.3.6 reduced oversized transcript text and wasted space without
-removing the native activity strip.
+Version 0.3.6 reduced oversized transcript text and wasted space.
 
 Version 0.3.5 reveals Chat after native session or child-chat activation by
 touch, mouse, or keyboard Enter. Firefox Android's native tree handles taps

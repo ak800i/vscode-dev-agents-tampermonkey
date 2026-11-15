@@ -43,7 +43,7 @@
   <link rel="stylesheet" href="/fixture-runtime.css">
 </head>
 <body>
-  <div class="monaco-workbench agent-sessions-workbench nosidebar noauxiliarybar noeditorpane">
+  <div class="monaco-workbench agent-sessions-workbench nosidebar noauxiliarybar noeditorpane nopanel">
     <div class="part titlebar" id="workbench.parts.titlebar">
       <button aria-label="Toggle Side Bar (Ctrl+B)">Sessions</button>
       <button aria-label="Toggle Side Panel (Ctrl+Alt+B)">Files</button>
@@ -65,6 +65,16 @@
       </div>
     </div>
     <div class="part sessionspart" id="workbench.parts.sessions">
+      <div class="chat-group-view session-activity-bar-host" style="position: relative">
+        <div class="chat-view" style="width: 200px; height: 20px">Chat view laid out beside the strip</div>
+        <div class="menu-activity-bar session-activity-bar docked floating" style="position: absolute; top: 0; right: 0; width: 30px">
+          <ul class="actions-container" role="toolbar" aria-label="Session Activity Bar">
+            <li class="action-item menu-entry"><a class="action-label codicon codicon-diff-multiple" role="button" aria-label="Changes (Ctrl+Shift+G)" aria-pressed="false" tabindex="0"></a><div class="menu-activity-bar-badge count">3</div></li>
+            <li class="action-item disabled"><a class="action-label separator disabled" role="presentation" aria-label="" aria-disabled="true"></a></li>
+            <li class="action-item menu-entry"><a class="action-label codicon codicon-terminal" role="button" aria-label="Terminal (Ctrl+DownArrow)" aria-pressed="false" tabindex="-1"></a><div class="menu-activity-bar-badge"></div></li>
+          </ul>
+        </div>
+      </div>
       <div class="interactive-session">
         <div role="list" aria-label="Chat">
           <div class="interactive-item-container interactive-request" tabindex="0">
@@ -417,6 +427,24 @@
       };
       // The installed app does not export Monaco's API; exercise the DOM bridge.
       window.monaco = undefined;
+
+      // Native strip entries toggle their pane through ActionViewItem's click,
+      // and the strip re-renders the entry after its pressed state changes.
+      fixture.activityRuns = [];
+      for (const [label, paneClass] of [['Changes', 'noeditorpane'], ['Terminal', 'nopanel']]) {
+        let entry = document.querySelector(`.session-activity-bar .action-label[aria-label^="${label}"]`);
+        entry.parentElement.addEventListener('click', () => setTimeout(() => {
+          fixture.activityRuns.push(label);
+          const workbench = document.querySelector('.agent-sessions-workbench');
+          const open = !workbench.classList.toggle(paneClass);
+          setTimeout(() => {
+            const fresh = entry.cloneNode(true);
+            fresh.setAttribute('aria-pressed', String(open));
+            entry.replaceWith(fresh);
+            entry = fresh;
+          }, 50);
+        }));
+      }
 
       // Like VS Code, Send is disabled for an empty prompt and its enablement
       // follows model changes asynchronously rather than within the edit.

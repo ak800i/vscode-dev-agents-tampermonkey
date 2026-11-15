@@ -1304,3 +1304,26 @@ test('disposal retains a queued draft that cannot be synchronized', async ({ pag
   await expect(page.locator('.tm-agents-status')).toContainText('could not be saved');
   expect(await page.evaluate(() => fixture.sends)).toEqual([]);
 });
+
+test('session activity strip actions live under More and the chat reclaims its column', async ({ page }) => {
+  const host = page.locator('.session-activity-bar-host');
+  await expect(page.locator('.session-activity-bar')).toBeHidden();
+  const widths = await host.evaluate(element => [element.clientWidth, element.querySelector('.chat-view').getBoundingClientRect().width]);
+  expect(widths[1]).toBe(widths[0]);
+  const more = page.getByRole('navigation', { name: 'Mobile workspace' }).getByRole('button', { name: 'More', exact: true });
+  await more.click();
+  await expect(page.getByRole('menuitemcheckbox', { name: 'Changes (3)', checked: false })).toBeVisible();
+  await page.getByRole('menuitemcheckbox', { name: 'Changes (3)' }).click();
+  await expect.poll(() => page.evaluate(() => fixture.activityRuns)).toEqual(['Changes']);
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'files');
+  await more.click();
+  await expect(page.getByRole('menuitemcheckbox', { name: 'Changes (3)', checked: true })).toBeVisible();
+  await page.getByRole('menuitemcheckbox', { name: 'Terminal' }).click();
+  await expect.poll(() => page.evaluate(() => fixture.activityRuns)).toEqual(['Changes', 'Terminal']);
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'panel');
+  await more.click();
+  await page.getByRole('menuitemcheckbox', { name: 'Terminal', checked: true }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-tm-agents-view', 'chat');
+  await page.evaluate(() => window.__vscodeAgentsMobile.dispose());
+  await expect(page.locator('.session-activity-bar')).toBeVisible();
+});

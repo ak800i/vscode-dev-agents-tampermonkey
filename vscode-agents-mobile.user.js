@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VS Code Agents - Mobile Input and Controls
 // @namespace    local.vscode-agents-mobile
-// @version      0.3.7
+// @version      0.3.8
 // @description  Phone-sized Agents controls in normal Android browser mode, with selectable input and touch fixes.
 // @match        https://vscode.dev/agents*
 // @run-at       document-start
@@ -59,6 +59,7 @@
   let lastGesture;
   let compatibilityClickTimer;
   let sessionOpenFrame = 0;
+  let activityFrame = 0;
   let nativePan;
   let nativeMomentum = false;
   const blockedTouches = new Set();
@@ -98,6 +99,11 @@
       padding: 6px; background: var(--vscode-menu-background, #222); border: 1px solid #666;
     }
     .tm-agents-more button { text-align: left; }
+    .tm-agents-more button[aria-checked="true"]::after { content: " \\2713"; }
+    /* The strip's actions are listed under More; keep its DOM for their native handlers. */
+    html.tm-agents-mobile .session-activity-bar { visibility: hidden !important; pointer-events: none !important; }
+    html.tm-agents-mobile .session-activity-bar-host .chat-view,
+    html.tm-agents-mobile .session-activity-bar-host .chat-view-widget { width: 100% !important; }
     html.tm-agents-mobile[data-tm-agents-view="sessions"] .monaco-workbench > .notifications-toasts {
       position: fixed !important; top: auto !important;
       bottom: max(56px, calc(100dvh - var(--tm-agents-height, 100dvh) + 56px)) !important;
@@ -545,7 +551,62 @@
       action.setAttribute('role', 'menuitem');
       menu.append(action);
     }
+    const strip = document.querySelector('.session-activity-bar:not(.inactive)');
+    for (const target of strip?.querySelectorAll('.action-label[role="button"]') || []) {
+      // Drop the keybinding hint; it is not usable from a touch keyboard.
+      let label = (target.getAttribute('aria-label') || '').replace(/\s*\([^)]*\)\s*$/, '');
+      const badge = target.parentElement.querySelector('.menu-activity-bar-badge')?.textContent.trim();
+      if (!label) continue;
+      if (badge) label += ` (${badge})`;
+      const action = button(label, () => {
+        menu.remove();
+        runActivity(target);
+      });
+      action.disabled = target.getAttribute('aria-disabled') === 'true';
+      action.setAttribute('role', 'menuitemcheckbox');
+      action.setAttribute('aria-checked', String(target.getAttribute('aria-pressed') === 'true'));
+      menu.append(action);
+    }
     document.body.append(menu);
+  }
+
+  // Strip entries open or close a side-pane tab or the panel; follow that pane.
+  function runActivity(target) {
+    const workbench = document.querySelector('.agent-sessions-workbench');
+    const panelBefore = !workbench?.classList.contains('nopanel');
+    const label = target.getAttribute('aria-label');
+    const isPressed = element => element?.getAttribute('aria-pressed') === 'true' || !!element?.classList.contains('checked');
+    const wasPressed = isPressed(target);
+    nativeClick(target);
+    const started = performance.now();
+    const follow = () => {
+      activityFrame = 0;
+      if (disposed || !workbench?.isConnected) return;
+      const files = !workbench.classList.contains('noeditorpane');
+      const panel = !workbench.classList.contains('nopanel');
+      // The strip may re-render its entries when their state changes.
+      const current = target.isConnected ? target : [...document.querySelectorAll('.session-activity-bar:not(.inactive) .action-label[role="button"]')]
+        .find(element => element.getAttribute('aria-label') === label);
+      const pressed = isPressed(current);
+      if (pressed && !wasPressed && panel && !panelBefore) {
+        view = 'panel';
+        document.documentElement.dataset.tmAgentsView = view;
+        nav?.querySelectorAll('[data-view]').forEach(element => element.setAttribute('aria-pressed', 'false'));
+        window.dispatchEvent(new Event('resize'));
+        return;
+      }
+      if (pressed && !wasPressed && files) {
+        setView('files');
+        return;
+      }
+      if (!pressed && wasPressed && ((view === 'files' && !files) || (view === 'panel' && !panel))) {
+        setView('chat');
+        return;
+      }
+      if (performance.now() - started < 2000) activityFrame = requestAnimationFrame(follow);
+    };
+    cancelAnimationFrame(activityFrame);
+    activityFrame = requestAnimationFrame(follow);
   }
 
   function createNavigation() {
@@ -975,7 +1036,7 @@
       ((viewport && viewport.scale < .95) || (screen.width > 0 && screen.width < 640));
     if (startupError || wideDesktop || workbench.classList.contains('phone-layout')) {
       showSetupNotice(startupError || (wideDesktop
-        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.7 uses the real phone viewport and selects desktop-style app controls itself.'
+        ? 'Turn Desktop site OFF in Firefox, then reload. Version 0.3.8 uses the real phone viewport and selects desktop-style app controls itself.'
         : 'Keep Desktop site OFF and reload after enabling the script. The page loaded its phone renderer before the script could select desktop-style controls.'));
       return;
     }
@@ -1084,6 +1145,7 @@
       workbenchObserver.disconnect();
       cancelAnimationFrame(frame);
       cancelAnimationFrame(sessionOpenFrame);
+      cancelAnimationFrame(activityFrame);
       clearTimeout(compatibilityClickTimer);
       blockedTouches.clear();
       for (const state of editors.values()) {
